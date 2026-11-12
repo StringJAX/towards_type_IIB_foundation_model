@@ -7,6 +7,8 @@ from pathlib import Path
 import pickle
 import time
 
+import logging
+logging.getLogger("jax._src.xla_bridge").setLevel(logging.CRITICAL)
 import jax
 import jax.numpy as jnp
 import numpy as np
