@@ -2,6 +2,8 @@ from jax_transformer.utils import sample
 from evaluation_scripts.evaluation_utils import *
 from evaluation_scripts.output_utils import *
 import os
+import logging
+logging.getLogger("jax._src.xla_bridge").setLevel(logging.CRITICAL)
 import jax
 import jax.numpy as jnp
 import pickle
@@ -25,11 +27,10 @@ warnings.filterwarnings("ignore")
 parser = argparse.ArgumentParser()
 parser.add_argument("--RUN_ID", type=int)
 parser.add_argument("--load_ckpt", type=str)
-parser.add_argument("--mod", action="store_true")
 parser.add_argument("--single", action="store_true")
-parser.add_argument("--nflux", action="store_true")
-parser.add_argument("--w0", action="store_true")
-parser.add_argument("--gs_inv", action="store_true")
+parser.add_argument("--nflux", type=int)
+parser.add_argument("--w0", type=float)
+parser.add_argument("--gs_inv", type=float)
 parser.add_argument("--num_samples", type=int, default=1000)
 parser.add_argument("--tol", type=float, default=1e-10)
 parser.add_argument("--sampling_temp", type=float, default=0.6)
@@ -39,7 +40,6 @@ parser.add_argument("--samples_file", type=str)
 parser.add_argument("--only_evaluate", action="store_true")
 parser.add_argument("--verbose", action="store_true")
 parser.add_argument("--use_newton", action="store_true")
-parser.add_argument("--save_valid", action="store_true")
 
 cwd = os.getcwd()
 args = parser.parse_args()
@@ -48,8 +48,8 @@ assert (
     args.RUN_ID is not None and args.load_ckpt is not None
 ), "--RUN_ID and --load_ckpt always have to be set."
 assert (
-    np.sum([args.mod, args.nflux, args.w0, args.gs_inv]) == 1
-), "Invalid option set. Needs to be --mod --nflux --gs_inv OR --w0."
+    np.sum([args.nflux is not None, args.w0 is not None, args.gs_inv is not None]) == 1 or np.sum([args.nflux is not None, args.w0 is not None, args.gs_inv is not None]) == 0
+), "Invalid option set. Needs to be --nflux --gs_inv OR --w0."
 
 if args.only_evaluate:
     assert (
@@ -68,8 +68,10 @@ if args.only_sample:
             )
         )
 
-# Configure JAX compilation cache
-# jax.config.update("jax_compilation_cache_max_size", int(3e10))
+is_mod = np.sum([args.nflux is not None, args.w0 is not None, args.gs_inv is not None]) == 0
+is_nflux = args.nflux is not None
+is_w0 = args.w0 is not None
+is_gs_inv = args.gs_inv is not None
 
 ###################
 #   DEFINITIONS   #
@@ -101,7 +103,10 @@ all_hodge_pairs = np.array(
         [[5, 89], [5, 149], [5, 153], [5, 165], [5, 213]],
     ]
 )
-
+if args.RUN_ID == 45 or args.RUN_ID == 44:
+    hodge_pairs = all_hodge_pairs[3,:]
+else:
+    hodge_pairs = all_hodge_pairs
 
 prompts = all_hodge_pairs.reshape(-1, 2)
 
@@ -117,9 +122,9 @@ raw_data_paths = {
 with open(geometry_log_path, "rb") as f:
     geometry_log = pickle.load(f)
 
-if args.w0:
+if is_w0:
     prompt_with_w0 = []
-    aux_prompts = np.array([1.1])
+    aux_prompts = np.array([args.w0])
     for prompt in prompts:
         prompt = np.repeat(prompt[None, :], len(aux_prompts), axis=0)
         prompt = np.concatenate(
@@ -129,7 +134,7 @@ if args.w0:
         prompt_with_w0.append(prompt)
     prompts = np.concatenate(prompt_with_w0, axis=0)
 
-if args.nflux:
+if is_nflux:
     prompt_with_nflux = []
     aux_prompts_len = []
     for prompt in prompts:
@@ -137,16 +142,16 @@ if args.nflux:
         h12 = prompt[0]
         model_ID = geometry_log[geometry_key]["model_ID"]
         jvc_model = jvc.FluxVacuaFinder(h12=h12, model_ID=model_ID, maximum_degree=10)
-        aux_prompts = np.array([40])
+        aux_prompts = np.array([args.nflux])
         aux_prompts_len.append(len(aux_prompts))
         prompt = np.repeat(prompt[None, :], len(aux_prompts), axis=0)
         prompt = np.concatenate([prompt, aux_prompts[:, None]], axis=-1)
         prompt_with_nflux.append(prompt)
     prompts = np.concatenate(prompt_with_nflux, axis=0)
 
-if args.gs_inv:
+if is_gs_inv:
     prompt_with_gs_inv = []
-    aux_prompts = np.array([4.0])
+    aux_prompts = np.array([args.gs_inv])
     for prompt in prompts:
         prompt = np.repeat(prompt[None, :], len(aux_prompts), axis=0)
         prompt = np.concatenate(
@@ -166,18 +171,18 @@ for prompt in prompts:
 
 # Define conditions
 
-if args.w0 or args.gs_inv:
+if is_w0 or is_gs_inv:
     mult = len(aux_prompts)
-elif args.nflux:
+elif is_nflux:
     mult = aux_prompts_len
 else:
     mult = 1
 num_per_row = all_hodge_pairs.shape[-2]
 conds = 4 * (np.repeat(np.array(h12_lst), num_per_row) + 1)
 conds = np.repeat(conds, mult)[:, None]
-if args.gs_inv:
+if is_gs_inv:
     t_conds = 1 * np.ones(mult * len(h12_lst) * num_per_row)[:, None]
-elif args.nflux:
+elif is_nflux:
     t_conds = 2 * np.ones(np.sum(mult))[:, None]
 else:
     t_conds = 2 * np.ones(mult * len(h12_lst) * num_per_row)[:, None]
@@ -247,15 +252,10 @@ jax.clear_caches()
 
 fluxes_train_dict = {}
 mean_validity = []
-if args.nflux or args.w0 or args.gs_inv:
-    valid_aux = {}
-if args.save_valid:
-    assert args.single is not None, "--save_valid only supported for --single."
-    valid_dict = {}
 print(f"Validating...")
 time0 = time.time()
 # Needed since N_flux prompts have different sizes
-if args.nflux:
+if is_nflux:
     start_idx = 0
 for k in range(len(all_hodge_pairs)):
     h12 = all_hodge_pairs[k][0][0]
@@ -272,14 +272,14 @@ for k in range(len(all_hodge_pairs)):
         print(f"Prompted geometry: {all_hodge_pairs[k][i]}")
 
         # Check all geometries with the same h12 for each prompt
-        if args.mod:
+        if is_mod:
             num_valid_total = 0
             fluxes_prev = set()
             print(f"Num samples: {len(samples[k * 5 + i][0])}")
             log_dict = {}
 
         for j in range(len(all_hodge_pairs[k])):
-            if (args.single or args.nflux or args.w0 or args.gs_inv) and not np.all(
+            if (args.single or is_nflux or is_w0 or is_gs_inv) and not np.all(
                 all_hodge_pairs[k][j] == all_hodge_pairs[k][i]
             ):
                 continue
@@ -294,18 +294,18 @@ for k in range(len(all_hodge_pairs)):
             if args.RUN_ID <= 35:
                 model = to_old_a_matrix(model)
 
-            if args.w0 or args.gs_inv:
+            if is_w0 or is_gs_inv:
                 len_aux_iter = len(aux_prompts)
-            elif args.nflux:
+            elif is_nflux:
                 len_aux_iter = len(aux_prompts)
             else:
                 len_aux_iter = 1
             for l in range(len_aux_iter):
-                if args.nflux and (l + 1) % 100 == 0:
+                if is_nflux and (l + 1) % 100 == 0:
                     jax.clear_caches()
-                if args.mod:
+                if is_mod:
                     samples_iter = samples[k * 5 + i].copy()
-                elif args.nflux:
+                elif is_nflux:
                     idx = start_idx + l
                     samples_iter = samples[idx]
                 else:
@@ -349,29 +349,6 @@ for k in range(len(all_hodge_pairs)):
                     out["valid_unique"] = 0
                 mean_validity.append(out["valid_unique"])
                 if fluxes is not None:
-                    if args.nflux:
-                        valid_aux[
-                            f"{prompts[idx][0]} {prompts[idx][1]} {prompts[idx][2]}"
-                        ] = {
-                            "dist": model.tadpole(fluxes),
-                            "validity": out["valid_unique"],
-                        }
-                    if args.w0:
-                        valid_aux[
-                            f"{prompts[idx][0]} {prompts[idx][1]} {prompts[idx][2]}"
-                        ] = {
-                            "dist": jnp.abs(
-                                model.superpotential_gauge_invariant(
-                                    moduli, tau, fluxes
-                                )
-                            ),
-                            "validity": out["valid_unique"],
-                        }
-                    if args.gs_inv:
-                        valid_aux[
-                            f"{prompts[idx][0]} {prompts[idx][1]} {prompts[idx][2]}"
-                        ] = {"dist": jnp.imag(tau), "validity": out["valid_unique"]}
-
                     # Check if in training data
                     fluxes_np = np.array(fluxes)
                     num_in_train_data = sum(
@@ -380,7 +357,7 @@ for k in range(len(all_hodge_pairs)):
                     out["num_in_train_data"] = num_in_train_data
 
                     # Update genuinely new solutions
-                    if args.mod and not args.single:
+                    if is_mod and not args.single:
                         num_new = 0
                         for idx_sample in np.array(idx_samples):
                             if idx_sample not in fluxes_prev:
@@ -388,14 +365,6 @@ for k in range(len(all_hodge_pairs)):
                                 num_new += 1
                         num_valid_total += num_new
 
-                    if args.save_valid and np.all(
-                        all_hodge_pairs[k][j] == all_hodge_pairs[k][i]
-                    ):
-                        valid_dict[geometry_key] = {
-                            "fluxes": fluxes,
-                            "moduli": moduli,
-                            "tau": tau,
-                        }
                 # Print console output
                 if args.nflux or args.w0 or args.gs_inv:
                     aux = prompts[idx][-1]
@@ -407,7 +376,7 @@ for k in range(len(all_hodge_pairs)):
 
             if args.nflux or args.w0 or args.gs_inv:
                 jax.clear_caches()
-        if args.mod and not args.single:
+        if is_mod and not args.single:
             print("------------------------")
             print(f"Total valid: {num_valid_total}")
             jax.block_until_ready(fluxes_prev)
@@ -415,36 +384,5 @@ for k in range(len(all_hodge_pairs)):
         jax.clear_caches()
     jax.block_until_ready(fluxes_train)
     del fluxes_train
-if args.nflux or args.w0 or args.gs_inv:
-    if args.nflux:
-        file_str = "nflux"
-    if args.w0:
-        file_str = "w0"
-    if args.gs_inv:
-        file_str = "gs_inv"
-    if not os.path.isfile(
-        cwd
-        + f"/data/samples/{file_str}_valid_{args.RUN_ID}_{args.load_ckpt.replace('/', '_')}.p"
-    ):
-        pickle.dump(
-            valid_aux,
-            open(
-                cwd
-                + f"/data/samples/{file_str}_valid_{args.RUN_ID}_{args.load_ckpt.replace('/', '_')}.p",
-                "wb",
-            ),
-        )
-    else:
-        raise FileExistsError(
-            f"Tried to save sample distributions at {cwd}/data/samples/{file_str}_valid_{args.RUN_ID}_{args.load_ckpt.replace('/', '_')}.p. File already exists."
-        )
-if args.single:
-    print("------------------------")
-    print(
-        f"Mean validity: {jnp.mean(jnp.array(mean_validity)*100.)/float(args.num_samples)}"
-    )
-    print("------------------------")
-
-
 time1 = time.time()
 print(f"Evaluation time in seconds: {np.round(time1-time0, 1)}")

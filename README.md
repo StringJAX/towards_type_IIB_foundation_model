@@ -104,7 +104,7 @@ If you use this code, please cite:
 @article{Krippendorf:2025xxx,
     author = {Krippendorf, Sven and Larfors, Magdalena and Liu, Zhimei and Schachner, Andreas and Walden, Moritz},
     title = {{Towards a foundation model for Type IIB flux vacua}},
-    year = {2025},
+    year = {2026},
     eprint = {XXXX.XXXXX},
     archivePrefix = {arXiv},
 }
