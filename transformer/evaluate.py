@@ -201,12 +201,12 @@ def evaluate(
 
     if only_evaluate:
         assert not only_sample, "Both only_evaluate and only_sample were set to True."
-        if os.path.isfile(cwd + f"/data/samples/{samples_file}.p"):
-            with open(cwd + f"/data/samples/{samples_file}.p", "rb") as handle:
+        if os.path.isfile(samples_file):
+            with open(samples_file, "rb") as handle:
                 samples = pickle.load(handle)
         else:
             raise FileNotFoundError(
-                f"only_evaluate was set to True but couldn't find samples at {cwd}/data/samples/{samples_file}.p"
+                f"only_evaluate was set to True but couldn't find samples at {samples_file}"
             )
     else:
         # Maximum length of samples
