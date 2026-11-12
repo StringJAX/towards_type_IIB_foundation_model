@@ -1,7 +1,13 @@
-from jax_transformer.transformer_model import DecoderModel, EncoderDecoderModel
-from jax_transformer.utils import load_model
-from jax_transformer.data_loader import DictTokenizer
-from data_scripts.tokenizer_utils import token_to_data
+if __package__ and "." in __package__:
+    from ..jax_transformer.transformer_model import DecoderModel, EncoderDecoderModel
+    from ..jax_transformer.utils import load_model
+    from ..jax_transformer.data_loader import DictTokenizer
+    from ..data_scripts.tokenizer_utils import token_to_data
+else:
+    from jax_transformer.transformer_model import DecoderModel, EncoderDecoderModel
+    from jax_transformer.utils import load_model
+    from jax_transformer.data_loader import DictTokenizer
+    from data_scripts.tokenizer_utils import token_to_data
 from flax.training import train_state
 import optax
 from scipy.optimize import root

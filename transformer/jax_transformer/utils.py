@@ -8,7 +8,7 @@ from tqdm import tqdm
 import os
 import orbax.checkpoint as ocp
 import numpy as np
-from jax_transformer.transformer_model import DecoderModel, EncoderDecoderModel
+from .transformer_model import DecoderModel, EncoderDecoderModel
 from functools import partial
 
 
