@@ -12,7 +12,7 @@ We investigate generative models as a framework for sampling Type IIB flux vacua
 All models are trained on a dataset of flux vacua across **20 Calabi–Yau geometries** with $h^{1,2} \in \{2,3,4,5\}$, containing $10^5$ distinct vacua per geometry from [Ebelt et al. (2023)](https://arxiv.org/abs/2307.15749).
 
 | $h^{1,2}$ | $(h^{1,2}, h^{1,1})$ pairs |
-|:---:|:---|:---:|
+|:---:|:---|
 | 2 | (2, 120), (2, 128), (2, 132), (2, 144), (2, 272) |
 | 3 | (3, 99), (3, 107), (3, 115), (3, 119), (3, 243) |
 | 4 | (4, 98), (4, 118), (4, 122), (4, 130), (4, 142) |
@@ -49,7 +49,7 @@ An absorbing-state discrete masked diffusion model using a bidirectional transfo
 Both model families support conditioning on physical observables to direct the search towards vacua with prescribed properties:
 
 | Observable | Symbol |
-|:---|:---:|:---|
+|:---|:---:|
 | Flux-induced D3-brane charge | $N_\text{flux}$ |
 | Vacuum superpotential magnitude | $\|W_0\|$ |
 | Inverse string coupling | $1/g_s$ |
