@@ -11,12 +11,12 @@ We investigate generative models as a framework for sampling Type IIB flux vacua
 
 All models are trained on a dataset of flux vacua across **20 Calabi–Yau geometries** with $h^{1,2} \in \{2,3,4,5\}$, containing $10^5$ distinct vacua per geometry from [Ebelt et al. (2023)](https://arxiv.org/abs/2307.15749).
 
-| $h^{1,2}$ | $(h^{1,2},\, h^{1,1})$ pairs | Flux dimension |
+| $h^{1,2}$ | $(h^{1,2}, h^{1,1})$ pairs |
 |:---:|:---|:---:|
-| 2 | (2, 120), (2, 128), (2, 132), (2, 144), (2, 272) | 6 |
-| 3 | (3, 99), (3, 107), (3, 115), (3, 119), (3, 243) | 8 |
-| 4 | (4, 98), (4, 118), (4, 122), (4, 130), (4, 142) | 10 |
-| 5 | (5, 89), (5, 149), (5, 153), (5, 165), (5, 213) | 12 |
+| 2 | (2, 120), (2, 128), (2, 132), (2, 144), (2, 272) |
+| 3 | (3, 99), (3, 107), (3, 115), (3, 119), (3, 243) |
+| 4 | (4, 98), (4, 118), (4, 122), (4, 130), (4, 142) |
+| 5 | (5, 89), (5, 149), (5, 153), (5, 165), (5, 213) |
 
 Pre-training uses all 20 geometries ($h^{1,2} \in \{2,3,4,5\}$). Transfer-learning experiments pre-train on $h^{1,2} \in \{2,3,4\}$ (15 geometries) and fine-tune on $h^{1,2}=5$ (5 geometries, 1,000 vacua each).
 
@@ -48,11 +48,11 @@ An absorbing-state discrete masked diffusion model using a bidirectional transfo
 
 Both model families support conditioning on physical observables to direct the search towards vacua with prescribed properties:
 
-| Observable | Symbol | Verified |
+| Observable | Symbol |
 |:---|:---:|:---|
-| Flux-induced D3-brane charge | $N_\text{flux}$ | Before numerical solving (exact) |
-| Vacuum superpotential magnitude | $\|W_0\|$ | After numerical solving |
-| Inverse string coupling | $1/g_s$ | After numerical solving |
+| Flux-induced D3-brane charge | $N_\text{flux}$ |
+| Vacuum superpotential magnitude | $\|W_0\|$ |
+| Inverse string coupling | $1/g_s$ |
 
 ---
 
