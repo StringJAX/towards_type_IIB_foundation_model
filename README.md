@@ -73,7 +73,7 @@ Samples flux vacua from all transformer variants studied in the paper:
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/StringJAX/towards_type_IIB_foundation_model/blob/main/transformer/evaluate.ipynb) **`transformer/evaluate.ipynb`** *(CPU)*
 
-Evaluates all transformer variants using the six-step validation routine from the paper (tadpole, $F$-terms, fundamental domain, LCS control, uniqueness, novelty). Reports validity rates per geometry and per model, and conditional accuracy for $N_\text{flux}$, $|W_0|$, and $g_s$ targets.
+Evaluates all transformer variants using the validation routine from the paper (tadpole, $F$-terms, fundamental domain, LCS control, uniqueness, novelty). Reports validity rates per geometry and per model, and conditional accuracy for $N_\text{flux}$, $|W_0|$, and $g_s$ targets.
 
 ---
 
@@ -92,7 +92,7 @@ Samples flux vacua from all diffusion model variants studied in the paper:
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/StringJAX/towards_type_IIB_foundation_model/blob/main/diffusion/evaluate.ipynb) **`diffusion/evaluate.ipynb`** *(CPU)*
 
-Evaluates all diffusion model variants using the same six-step validation routine. Reports validity rates per geometry and per model, and conditional accuracy for $N_\text{flux}$, $|W_0|$, and $g_s$ targets.
+Evaluates all diffusion model variants using the same validation routine. Reports validity rates per geometry and per model, and conditional accuracy for $N_\text{flux}$, $|W_0|$, and $g_s$ targets.
 
 ---
 
