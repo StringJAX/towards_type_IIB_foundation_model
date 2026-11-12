@@ -9,7 +9,7 @@ We investigate generative models as a framework for sampling Type IIB flux vacua
 
 ## Dataset
 
-All models are trained on a dataset of flux vacua across **20 Calabi–Yau geometries** with $h^{1,2} \in \{2,3,4,5\}$, containing $10^5$ distinct vacua per geometry from [Ebelt et al. (2023)](https://arxiv.org/abs/2306.XXXXX).
+All models are trained on a dataset of flux vacua across **20 Calabi–Yau geometries** with $h^{1,2} \in \{2,3,4,5\}$, containing $10^5$ distinct vacua per geometry from [Ebelt et al. (2023)](https://arxiv.org/abs/2307.15749).
 
 | $h^{1,2}$ | $(h^{1,2},\, h^{1,1})$ pairs | Flux dimension |
 |:---:|:---|:---:|
@@ -30,7 +30,7 @@ An encoder–decoder transformer that takes the Calabi–Yau geometry (and optio
 |:---|:---:|:---|
 | **Pre-trained** | all 20 geometries | Baseline multi-geometry generation |
 | **Pre-trained + GRPO** | all 20 geometries | Post-training with Group Relative Policy Optimisation; rewards valid, novel solutions |
-| **Fine-tuned (from scratch)** | $h^{1,2}=5$ only | Trained from scratch on 1,000 vacua per $h^{1,2}=5$ geometry |
+| **Benchmark for fine-tuning** | $h^{1,2}=5$ only | Trained from scratch on 1,000 vacua per $h^{1,2}=5$ geometry |
 | **Pre-trained → Fine-tuned** | $h^{1,2}\in\{2,3,4\}$ then $h^{1,2}=5$ | Transfer learning: pre-trained model fine-tuned on 1,000 vacua per $h^{1,2}=5$ geometry |
 
 ### Diffusion Model
@@ -41,7 +41,7 @@ An absorbing-state discrete masked diffusion model using a bidirectional transfo
 |:---|:---:|:---|
 | **Pre-trained** | all 20 geometries | Baseline multi-geometry generation |
 | **Pre-trained + GRPO** | all 20 geometries | Post-training with Group Diffusion Policy Optimisation |
-| **Fine-tuned (from scratch)** | $h^{1,2}=5$ only | Trained from scratch on 1,000 vacua per $h^{1,2}=5$ geometry |
+| **Benchmark for fine-tuning** | $h^{1,2}=5$ only | Trained from scratch on 1,000 vacua per $h^{1,2}=5$ geometry |
 | **Pre-trained → Fine-tuned** | $h^{1,2}\in\{2,3,4\}$ then $h^{1,2}=5$ | Transfer learning: pre-trained model fine-tuned on 1,000 vacua per $h^{1,2}=5$ geometry |
 
 ### Conditional Generation
