@@ -34,7 +34,7 @@ else:
 def evaluate(
     RUN_ID, load_ckpt, *, single=False, nflux=None, w0=None, gs_inv=None,
     num_samples=1000, tol=1e-10, sampling_temp=0.6, discr=10.0,
-    only_sample=False, only_evaluate=False,
+    only_sample=False, samples_file=None, only_evaluate=False,
     verbose=False, use_newton=False, cwd=None,
 ):
     """Sample a checkpoint and optionally validate the generated vacua.
@@ -69,10 +69,6 @@ def evaluate(
     
     if only_sample and only_evaluate:
         raise ValueError("only_sample and only_evaluate cannot both be True.")
-
-    if only_sample and samples_file is not None:
-        if os.path.isfile(cwd + f"/data/samples/{samples_file}.p"):
-            raise FileExistsError(f"Samples file {samples_file!r} already exists.")
 
     is_mod = np.sum([nflux is not None, w0 is not None, gs_inv is not None]) == 0
     is_nflux = nflux is not None
