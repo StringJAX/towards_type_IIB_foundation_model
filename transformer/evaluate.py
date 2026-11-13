@@ -115,7 +115,7 @@ def evaluate(
     else:
         hodge_pairs = all_hodge_pairs
 
-    prompts = all_hodge_pairs.reshape(-1, 2)
+    prompts = hodge_pairs.reshape(-1, 2)
 
     # Load data
     train_data_file = "_".join(
