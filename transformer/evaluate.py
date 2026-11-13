@@ -77,6 +77,9 @@ def evaluate(
     is_w0 = w0 is not None
     is_gs_inv = gs_inv is not None
 
+    if is_nflux:
+        assert isinstance(nflux, int), "nflux needs to be an integer."
+
     ###################
     #   DEFINITIONS   #
     ###################
