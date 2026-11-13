@@ -121,7 +121,7 @@ def evaluate(
     train_data_file = "_".join(
         config["train_data_flux"].split("/")[-1].split(".")[0].split("_")[2:]
     )
-    h12_lst = all_hodge_pairs[:, 0, 0]
+    h12_lst = hodge_pairs[:, 0, 0]
     raw_data_paths = {
         h12: cwd + f"/data/data_multiple/train_data_raw_{train_data_file}_{h12}.npy"
         for h12 in h12_lst
