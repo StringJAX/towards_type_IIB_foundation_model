@@ -244,8 +244,7 @@ def evaluate(
     ###################
     #    Evaluation   #
     ###################
-
-    valid_samples = []
+    valid_aux = {}
     mean_validity = []
     print(f"Validating...")
     time0 = time.time()
@@ -362,14 +361,28 @@ def evaluate(
                                     num_new += 1
                             num_valid_total += num_new
 
-                    valid_samples.append({
-                        "prompt": tuple(int(value) for value in prompts[idx]),
-                        "geometry": tuple(int(value) for value in all_hodge_pairs[k][j]),
-                        "fluxes": fluxes,
-                        "moduli": moduli if fluxes is not None else None,
-                        "tau": tau if fluxes is not None else None,
-                        "sample_indices": idx_samples if fluxes is not None else None,
-                    })
+                        if is_nflux:
+                            valid_aux[
+                                f"{prompts[idx][0]} {prompts[idx][1]} {prompts[idx][2]}"
+                            ] = {
+                                "dist": model.tadpole(fluxes),
+                                "validity": out["valid_unique"],
+                            }
+                        if is_w0:
+                            valid_aux[
+                                f"{prompts[idx][0]} {prompts[idx][1]} {prompts[idx][2]}"
+                            ] = {
+                                "dist": jnp.abs(
+                                    model.superpotential_gauge_invariant(
+                                        moduli, tau, fluxes
+                                    )
+                                ),
+                                "validity": out["valid_unique"],
+                            }
+                        if is_gs_inv:
+                            valid_aux[
+                                f"{prompts[idx][0]} {prompts[idx][1]} {prompts[idx][2]}"
+                            ] = {"dist": jnp.imag(tau), "validity": out["valid_unique"]}
 
                     # Print console output
                     if is_nflux or is_w0 or is_gs_inv:
@@ -393,7 +406,7 @@ def evaluate(
     time1 = time.time()
     print(f"Evaluation time in seconds: {np.round(time1-time0, 1)}")
 
-    return valid_samples
+    return valid_aux
 
 
 def main():
