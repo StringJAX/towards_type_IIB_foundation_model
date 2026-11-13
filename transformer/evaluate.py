@@ -111,7 +111,7 @@ def evaluate(
         ]
     )
     if RUN_ID == 45 or RUN_ID == 44:
-        hodge_pairs = all_hodge_pairs[3,:]
+        hodge_pairs = all_hodge_pairs[None,3,:]
     else:
         hodge_pairs = all_hodge_pairs
 
