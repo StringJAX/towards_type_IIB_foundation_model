@@ -15,7 +15,10 @@ from diffusion.src.pipeline import (
 
 
 class EvaluationFormatTests(unittest.TestCase):
-    def setUp(self):
+    """Check the exported sample format against the transformer evaluator."""
+
+    def setUp(self) -> None:
+        """Build one generated sample with h12 = 2."""
         self.flux = torch.arange(-6, 6).reshape(1, 12)
         self.generated = {
             "flux": self.flux,
@@ -25,7 +28,8 @@ class EvaluationFormatTests(unittest.TestCase):
             },
         }
 
-    def test_integer_layout_and_scaling(self):
+    def test_integer_layout_and_scaling(self) -> None:
+        """Check the int64 layout and discr scaling of every mode."""
         for mode in MODES:
             with self.subTest(mode=mode):
                 flux, z, tau = to_evaluation_sample(self.generated, h12=2, mode=mode)
@@ -34,7 +38,8 @@ class EvaluationFormatTests(unittest.TestCase):
                 np.testing.assert_array_equal(tau, [[3]] if mode == "gs_inv" else [[3, 31]])
                 self.assertTrue(all(x.dtype == np.int64 for x in (flux, z, tau)))
 
-    def test_existing_evaluator_conversion(self):
+    def test_existing_evaluator_conversion(self) -> None:
+        """Check that the transformer converter recovers the physical values."""
         # Execute the actual converter without importing unrelated model/solver
         # dependencies. NumPy supplies the same array operations for this test.
         path = REPO_ROOT / "transformer/evaluation_scripts/evaluation_utils.py"
@@ -51,7 +56,8 @@ class EvaluationFormatTests(unittest.TestCase):
             np.testing.assert_allclose(z, [[1.2 - 2.3j, -3.2 + 4.3j]])
             np.testing.assert_allclose(tau, [0.3 + (4j if mode == "gs_inv" else 3.1j)])
 
-    def test_prompt_order_matches_evaluator(self):
+    def test_prompt_order_matches_evaluator(self) -> None:
+        """Check HODGE_PAIRS against all_hodge_pairs in transformer/evaluate.py."""
         tree = ast.parse((REPO_ROOT / "transformer/evaluate.py").read_text())
         assignment = next(n for n in tree.body if isinstance(n, ast.Assign) and any(
             isinstance(target, ast.Name) and target.id == "all_hodge_pairs" for target in n.targets
@@ -59,7 +65,8 @@ class EvaluationFormatTests(unittest.TestCase):
         expected = np.array(ast.literal_eval(assignment.value.args[0])).reshape(-1, 2)
         np.testing.assert_array_equal(HODGE_PAIRS, expected)
 
-    def test_invalid_scale_and_nonfinite_initializer(self):
+    def test_invalid_scale_and_nonfinite_initializer(self) -> None:
+        """Check that invalid scales and non-finite initializers raise ValueError."""
         for scale in (0, -1, float("nan"), float("inf")):
             with self.assertRaises(ValueError):
                 to_evaluation_sample(self.generated, h12=2, mode="nflux", discr=scale)
@@ -67,7 +74,8 @@ class EvaluationFormatTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             to_evaluation_sample(self.generated, h12=2, mode="nflux")
 
-    def test_existing_output_or_sidecar_prevents_sampling(self):
+    def test_existing_output_or_sidecar_prevents_sampling(self) -> None:
+        """Check that an existing output or sidecar stops sampling unchanged."""
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "samples.p"
             for existing in (output, output.with_suffix(".json")):

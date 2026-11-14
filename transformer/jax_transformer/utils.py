@@ -1,3 +1,13 @@
+"""Training, validation, sampling and checkpoint utilities for the transformer models.
+
+Training and validation steps are compiled with ``jax.pmap`` over the local
+devices (axis name "data"). Sampling supports cached decoding for
+:class:`jax_transformer.transformer_model.EncoderDecoderModel`.
+"""
+
+from collections.abc import Callable
+from typing import Any
+
 import jax.numpy as jnp
 import jax
 from flax import linen as nn
@@ -12,17 +22,18 @@ from .transformer_model import DecoderModel, EncoderDecoderModel
 from functools import partial
 
 
-def shard_batch(batch):
+def shard_batch(batch: jax.Array) -> jax.Array:
     r"""Splits a single batch into batches for each device.
 
     Args:
         batch (jnp.ndarray([batch_size, seq_len])): Input batch.
 
     Returns:
-        share (jnp.ndarray([num_devices, batch_size/num_devices, seq_len])): Shards of batch.
+        shards (jnp.ndarray([num_devices, batch_size/num_devices, seq_len])): Shards of batch.
 
-    Raise:
-        AssertionError: If batch_size is not devisible by num_devices.
+    Raises:
+        TypeError: If batch_size is not divisible by num_devices (raised by the
+            reshape of a JAX array).
     """
     n = jax.local_device_count()
     shards = batch.reshape(n, batch.shape[0] // n, *batch.shape[1:])
@@ -31,9 +42,12 @@ def shard_batch(batch):
 
 @partial(jax.pmap, axis_name="data")
 def train_step_decoder_only(
-    state, input_ids, target_ids, mask_in, mask_loss, dropout_key
-):
+    state: train_state.TrainState, input_ids: jax.Array, target_ids: jax.Array, mask_in: jax.Array, mask_loss: jax.Array, dropout_key: jax.Array
+) -> tuple[jax.Array, train_state.TrainState, jax.Array]:
     r"""A single training step for a decoder-only model.
+
+    Compiled with ``jax.pmap`` over axis "data": every argument carries a leading
+    device axis, the shapes below are per device, and outputs are replicated.
 
     Args:
         state (train_state.TrainState): Train state.
@@ -46,9 +60,10 @@ def train_step_decoder_only(
     Returns:
         loss (jnp.float): Mean loss value of batch.
         state (train_state.TrainState): Train state after a single optimization step.
+        token_count (jax.Array): Number of loss tokens (sum of mask_loss) over all devices.
     """
 
-    def loss_fn(params):
+    def loss_fn(params: Any) -> jax.Array:
         """Compute the loss for the enclosing step's inputs and masks.
 
         Args:
@@ -82,16 +97,19 @@ def train_step_decoder_only(
 
 @partial(jax.pmap, axis_name="data")
 def train_step_encoder_decoder(
-    state,
-    input_ids,
-    decoder_input_ids,
-    target_ids,
-    mask_enc,
-    mask_dec_in,
-    mask_loss,
-    dropout_key,
-):
+    state: train_state.TrainState,
+    input_ids: jax.Array,
+    decoder_input_ids: jax.Array,
+    target_ids: jax.Array,
+    mask_enc: jax.Array,
+    mask_dec_in: jax.Array,
+    mask_loss: jax.Array,
+    dropout_key: jax.Array,
+) -> tuple[jax.Array, train_state.TrainState, jax.Array]:
     r"""A single training step for an encoder-decoder model.
+
+    Compiled with ``jax.pmap`` over axis "data": every argument carries a leading
+    device axis, the shapes below are per device, and outputs are replicated.
 
     Args:
         state (train_state.TrainState): Train state.
@@ -106,9 +124,10 @@ def train_step_encoder_decoder(
     Returns:
         loss (jnp.float): Mean loss value of batch.
         state (train_state.TrainState): Train state after a single optimization step.
+        token_count (jax.Array): Number of loss tokens (sum of mask_loss) over all devices.
     """
 
-    def loss_fn(params):
+    def loss_fn(params: Any) -> jax.Array:
         """Compute the loss for the enclosing step's inputs and masks.
 
         Args:
@@ -143,8 +162,11 @@ def train_step_encoder_decoder(
 
 
 @partial(jax.pmap, axis_name="data")
-def validation_step_decoder_only(state, input_ids, target_ids, mask_in, mask_loss):
+def validation_step_decoder_only(state: train_state.TrainState, input_ids: jax.Array, target_ids: jax.Array, mask_in: jax.Array, mask_loss: jax.Array) -> tuple[jax.Array, jax.Array]:
     r"""A single validation step.
+
+    Compiled with ``jax.pmap`` over axis "data": every argument carries a leading
+    device axis, the shapes below are per device, and outputs are replicated.
 
     Args:
         state (train_state.TrainState): Train state.
@@ -152,14 +174,13 @@ def validation_step_decoder_only(state, input_ids, target_ids, mask_in, mask_los
         target_ids (jnp.ndarray([batch_size, seq_len])): Batched target IDs.
         mask_in (jnp.ndarray([batch_size, seq_len])): Batched padding mask for self-attention.
         mask_loss (jnp.ndarray([batch_size, seq_len])): Batched padding mask for loss.
-        dropout_key (jax.prng_key): Key for dropout.
-
 
     Returns:
-        loss (float): Mean validation loss value of batch.
+        loss_sum (jax.Array): Sum of the masked token losses over all devices.
+        token_count (jax.Array): Number of loss tokens (sum of mask_loss) over all devices.
     """
 
-    def loss_fn(params):
+    def loss_fn(params: Any) -> jax.Array:
         """Compute the loss for the enclosing step's inputs and masks.
 
         Args:
@@ -186,30 +207,34 @@ def validation_step_decoder_only(state, input_ids, target_ids, mask_in, mask_los
 
 @partial(jax.pmap, axis_name="data")
 def validation_step_encoder_decoder(
-    state,
-    input_ids,
-    decoder_input_ids,
-    target_ids,
-    mask_enc,
-    mask_dec_in,
-    mask_loss,
-):
+    state: train_state.TrainState,
+    input_ids: jax.Array,
+    decoder_input_ids: jax.Array,
+    target_ids: jax.Array,
+    mask_enc: jax.Array,
+    mask_dec_in: jax.Array,
+    mask_loss: jax.Array,
+) -> tuple[jax.Array, jax.Array]:
     r"""A single validation step.
+
+    Compiled with ``jax.pmap`` over axis "data": every argument carries a leading
+    device axis, the shapes below are per device, and outputs are replicated.
 
     Args:
         state (train_state.TrainState): Train state.
         input_ids (jnp.ndarray([batch_size, seq_len_in])): Batched input of token IDs.
         decoder_input_ids (jnp.ndarray([batch_size, seq_len_out-1])): Batched input of token IDs.
-        target_ids (jnp.ndarray([batch_size, seq_len_out-1])): One-hot encoded targets.
+        target_ids (jnp.ndarray([batch_size, seq_len_out-1])): Batched target IDs (integer labels).
         mask_enc (jax.Array): Encoder padding mask [batch_size, seq_len_in].
         mask_dec_in (jnp.ndarray([batch_size, seq_len_out-1])): Batched padding mask for self-attention in decoder.
         mask_loss (jnp.ndarray([batch_size, seq_len_out-1])): Batched padding mask for loss.
 
     Returns:
-        loss (float): Mean validation loss value of batch.
+        loss_sum (jax.Array): Sum of the masked token losses over all devices.
+        token_count (jax.Array): Number of loss tokens (sum of mask_loss) over all devices.
     """
 
-    def loss_fn(params):
+    def loss_fn(params: Any) -> jax.Array:
         """Compute the loss for the enclosing step's inputs and masks.
 
         Args:
@@ -236,7 +261,7 @@ def validation_step_encoder_decoder(
     return loss_sum, token_count
 
 
-def init_model(model, model_type, params_key):
+def init_model(model: nn.Module, model_type: str, params_key: jax.Array) -> Any:
     r"""Initializes model.
 
     Args:
@@ -276,7 +301,7 @@ def init_model(model, model_type, params_key):
     return params
 
 
-def _pad(arr, length):
+def _pad(arr: jax.Array, length: int) -> jax.Array:
     """Append zero rows to an array.
 
     Args:
@@ -291,7 +316,7 @@ def _pad(arr, length):
     return arr
 
 
-def _prepare_batch(batch, model_type, mask_key="masks"):
+def _prepare_batch(batch: dict[str, Any], model_type: str, mask_key: str = "masks") -> tuple[jax.Array, ...]:
     r"""Prepare a batch for the selected model type.
 
     Args:
@@ -303,7 +328,13 @@ def _prepare_batch(batch, model_type, mask_key="masks"):
 
     Returns:
         tuple: Device-sharded inputs, shifted targets, and masks, padded to a
-            batch size divisible by the number of local devices.
+            batch size divisible by the number of local devices. Decoder-only:
+            (input_ids, target_ids, mask_in, mask_loss); encoder-decoder:
+            (input_ids, decoder_input_ids, target_ids, mask_enc, mask_dec_in,
+            mask_loss). Padding rows are zeros, including their masks.
+
+    Raises:
+        AssertionError: If model_type is neither "dec" nor "enc_dec".
     """
     if model_type == "dec":
         batch_ids = jnp.array(batch["input_ids"])
@@ -344,7 +375,7 @@ def _prepare_batch(batch, model_type, mask_key="masks"):
     )
 
 
-def _log_epoch_metrics(epoch, train_loss, val_loss, log_freq, num_epochs, width):
+def _log_epoch_metrics(epoch: int, train_loss: float | jax.Array, val_loss: float | jax.Array, log_freq: int | None, num_epochs: int, width: int) -> None:
     r"""Log training progress at the configured intervals.
 
     Args:
@@ -367,7 +398,7 @@ def _log_epoch_metrics(epoch, train_loss, val_loss, log_freq, num_epochs, width)
         )
 
 
-def _save_checkpoint(state, ckpt_dir, epoch, checkpointer):
+def _save_checkpoint(state: train_state.TrainState, ckpt_dir: str, epoch: int, checkpointer: ocp.PyTreeCheckpointer) -> train_state.TrainState:
     r"""Save an unreplicated checkpoint and return the replicated state.
 
     Args:
@@ -387,17 +418,17 @@ def _save_checkpoint(state, ckpt_dir, epoch, checkpointer):
 
 
 def train(
-    model,
-    num_epochs,
-    train_loader,
-    val_loader,
-    optimizer,
-    params=None,
-    save_freq=None,
-    ckpt_dir=None,
-    log_freq=None,
-    root_key=jax.random.key(42),
-):
+    model: nn.Module,
+    num_epochs: int,
+    train_loader: Any,
+    val_loader: Any,
+    optimizer: optax.GradientTransformation,
+    params: Any = None,
+    save_freq: int | None = None,
+    ckpt_dir: str | None = None,
+    log_freq: int | None = None,
+    root_key: jax.Array = jax.random.key(42),
+) -> tuple[train_state.TrainState, jax.Array, jax.Array]:
     r"""Trains a given transformer model.
 
     Args:
@@ -419,7 +450,8 @@ def train(
 
     Raises:
         AssertionError: If a save frequency is set, a checkpoint directory must also be set.
-        AssertionError: Only encoder and encoder-decoder are supported as models.
+        AssertionError: If model is neither a DecoderModel nor an EncoderDecoderModel.
+        AssertionError: If a loader's batch size is not divisible by the local device count.
     """
     # Assertions
     if (save_freq is None) != (ckpt_dir is None):
@@ -564,7 +596,7 @@ def train(
 
 
 @jax.jit
-def get_logits(state, input_ids, output_ids=None):
+def get_logits(state: train_state.TrainState, input_ids: jax.Array, output_ids: jax.Array | None = None) -> jax.Array:
     r"""A single forward-pass to obtain logits.
 
     Args:
@@ -598,9 +630,9 @@ def get_logits(state, input_ids, output_ids=None):
 # changing weight values, the random key, or temperature normally reuses it.
 @partial(jax.jit, static_argnames=("apply_fn", "max_len", "use_kv_cache", "num_samples"))
 def _sample_ids(
-    params, apply_fn, input_ids, root_key, sampling_temp, bos_id, eos_id, max_len,
-    use_kv_cache=False, num_samples=None,
-):
+    params: Any, apply_fn: Callable[..., Any], input_ids: jax.Array, root_key: jax.Array, sampling_temp: float, bos_id: int, eos_id: int, max_len: int,
+    use_kv_cache: bool = False, num_samples: int | None = None,
+) -> tuple[jax.Array, jax.Array]:
     """Generate a fixed-size batch on device, returning IDs and first-EOS lengths.
 
     Cached decoding accepts a single shared encoder prompt. The fallback path
@@ -669,7 +701,7 @@ def _sample_ids(
             for layer in cross_kv
         )
 
-    def condition(carry):
+    def condition(carry: tuple) -> jax.Array:
         """Decide whether another token should be generated.
 
         Args:
@@ -686,7 +718,7 @@ def _sample_ids(
         # Stop before the reserved final EOS slot, or when every row is done.
         return (position < max_len - 1) & ~jnp.all(finished)
 
-    def step(carry):
+    def step(carry: tuple) -> tuple:
         """Generate one token per row and update the fixed-shape loop state.
 
         Args:
@@ -753,17 +785,17 @@ def _sample_ids(
 
 
 def sample(
-    state,
-    model_type,
-    num_samples,
-    max_len,
-    tokenizer,
-    prompt,
-    root_key=jax.random.key(42),
-    sampling_temp=1.0,
-    return_tokens=False,
-    use_kv_cache=True,
-):
+    state: train_state.TrainState,
+    model_type: str,
+    num_samples: int,
+    max_len: int,
+    tokenizer: Any,
+    prompt: Any,
+    root_key: jax.Array = jax.random.key(42),
+    sampling_temp: float = 1.0,
+    return_tokens: bool = False,
+    use_kv_cache: bool = True,
+) -> jax.Array | list[np.ndarray]:
     r"""Samples new tokens based on inputs using a trained model.
 
     Args:
@@ -785,9 +817,10 @@ def sample(
 
     Returns:
         samples (jax.Array or list[np.ndarray]): Numeric output has shape
-            [num_samples, prompt_length + max_len]. Each row contains the prompt,
-            BOS, completion, first EOS, then PAD tokens. String output is a list
-            of CPU arrays truncated after the first EOS, without padding.
+            [num_samples, max_len] ([0, prompt_length + max_len] if num_samples
+            is 0). Each row contains BOS, completion, first EOS, then PAD tokens;
+            the prompt is not included. String output is a list of CPU arrays
+            holding the prompt, then BOS through the first EOS, without padding.
 
     Raises:
         AssertionError: If the model is not encoder-decoder.
@@ -864,7 +897,7 @@ def sample(
         return samples
 
 
-def load_model(target_state, path):
+def load_model(target_state: train_state.TrainState, path: str) -> train_state.TrainState:
     r"""Load a saved checkpoint.
 
     Args:

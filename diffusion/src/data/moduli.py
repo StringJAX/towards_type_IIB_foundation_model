@@ -2,11 +2,32 @@
 from typing import Any
 import numpy as np
 
-NUM_MODULI_QUERIES = 6
-PARAMETERIZATION = "z_real_asinh_imaginary__tau_real_log_imaginary"
+NUM_MODULI_QUERIES: int = 6
+PARAMETERIZATION: str = "z_real_asinh_imaginary__tau_real_log_imaginary"
 
 
 def validate_moduli_statistics(stats: dict[str, Any]) -> None:
+    """Check the per-geometry moduli normalisation statistics of a checkpoint.
+
+    Each entry of ``stats["geometries"]`` must provide ``mean``, ``std``,
+    ``quantile_low`` and ``quantile_high`` of shape ``(NUM_MODULI_QUERIES, 2)``
+    and a boolean ``active_query_mask`` of shape ``(NUM_MODULI_QUERIES,)``.
+    :class:`FluxVacuumTransformer` reads rows 0-4 as the five ``z`` queries and
+    row 5 as ``tau``; the two columns are the parameterised coordinates named by
+    :data:`PARAMETERIZATION`.
+
+    Args:
+        stats (dict[str, Any]): Moduli statistics with ``format_version`` 3,
+            ``parameterization`` equal to :data:`PARAMETERIZATION`, and a
+            non-empty ``geometries`` dictionary keyed by geometry ID.
+
+    Raises:
+        ValueError: If the format version or parameterisation is unsupported,
+            ``geometries`` is missing or empty, an array has the wrong shape or
+            a non-finite value, a standard deviation is not positive, the last
+            (``tau``) query is inactive, or an active lower quantile exceeds
+            its upper quantile.
+    """
     if int(stats.get("format_version", -1)) != 3:
         raise ValueError("Unsupported moduli-statistics format")
     if stats.get("parameterization") != PARAMETERIZATION:

@@ -1,3 +1,14 @@
+"""Model loading, sample processing and validity checks for generated flux vacua.
+
+Generated token sequences are parsed into fluxes, complex-structure moduli and the
+axio-dilaton (:func:`process_samples`, :func:`convert_samples_to_data`).
+:func:`validate_vacua` then applies the validity checks: the D3 tadpole bound, solving
+the F-term conditions with jaxvacua (``scipy.optimize.root`` or Newton's method),
+mapping to the fundamental domain, the cuts on the axio-dilaton, the Kähler cone and the
+axions, and the removal of duplicate fluxes. Novelty with respect to the training data is
+checked by the callers (e.g. ``evaluate.py``), not in this module.
+"""
+
 if __package__ and "." in __package__:
     from ..jax_transformer.transformer_model import DecoderModel, EncoderDecoderModel
     from ..jax_transformer.utils import load_model
@@ -17,9 +28,11 @@ import json
 import numpy as np
 from tqdm import tqdm
 import os
+from collections.abc import Sequence
+from typing import Any
 
 
-def load_config(RUN_ID, cwd):
+def load_config(RUN_ID: int, cwd: str) -> dict[str, Any]:
     r"""Loads config of trained model.
 
     Args:
@@ -29,7 +42,7 @@ def load_config(RUN_ID, cwd):
     Returns:
         config (dict): Model config.
 
-    Raise:
+    Raises:
         AssertionError: If config['optimizer'] contains unsupported optimizer.
     """
     with open(cwd + f"/logs/run_{RUN_ID}/run_{RUN_ID}.json") as f:
@@ -42,8 +55,13 @@ def load_config(RUN_ID, cwd):
 
 
 def load_model_from_config(
-    RUN_ID, config, load_ckpt, cwd, override_opt=False, GRPO_ID=None
-):
+    RUN_ID: int,
+    config: dict[str, Any],
+    load_ckpt: str,
+    cwd: str,
+    override_opt: bool = False,
+    GRPO_ID: str | None = None,
+) -> tuple[train_state.TrainState, DecoderModel | EncoderDecoderModel, DictTokenizer]:
     r"""Loads trained model from respective config.
 
     Args:
@@ -52,11 +70,14 @@ def load_model_from_config(
         load_ckpt (str): Name of checkpoint to be loaded.
         cwd (str): Path to directory containing the folder 'checkpoints'.
         override_opt (bool): Needed for compatibility with older checkpoints. Defaults to False.
+        GRPO_ID (str | None): ID of the GRPO run. Used only if ``override_opt`` is True and
+            ``RUN_ID > 35``, to read the learning rate from
+            'logs/run_{RUN_ID}/GRPO_{GRPO_ID}/log.json' under ``cwd``. Defaults to None.
 
     Returns:
         state (train_state.TrainState): Loaded train state.
         model (nn.Module): Loaded model.
-        tokenizer (utils.DictTokenizer): Tokenizer used during training.
+        tokenizer (data_loader.DictTokenizer): Tokenizer used during training.
     """
     models = {"decoder": DecoderModel, "encoder-decoder": EncoderDecoderModel}
     optimizers = {"adam": optax.adam, "adamw": optax.adamw}
@@ -136,8 +157,11 @@ def load_model_from_config(
     return state, model, tokenizer
 
 
-def to_old_a_matrix(model):
+def to_old_a_matrix(model: Any) -> Any:
     r"""Map a-matrix of jaxvacua model to previously used convention. Needed to verify old models.
+
+    Sets ``a_matrix[i][j] = intnums[i][j][j] / 2`` on ``model.lcs_tree``; the model is
+    modified in place.
 
     Args:
         model (jvc.FluxVacuaFinder): Jaxvacua model specifying geometry.
@@ -154,8 +178,15 @@ def to_old_a_matrix(model):
 
 
 def solve(
-    fluxes, moduli0, tau0, model, tol, use_scipy=True, verbose=False, debug=False
-):
+    fluxes: jax.Array,
+    moduli0: jax.Array,
+    tau0: jax.Array,
+    model: Any,
+    tol: float,
+    use_scipy: bool = True,
+    verbose: bool = False,
+    debug: bool = False,
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
     r"""Solving the F-term conditions for given input and model.
 
     Args:
@@ -163,15 +194,25 @@ def solve(
         moduli0 (jnp.ndarray([batch_size, model.h12])): Batch of moduli used as initial guesses.
         tau0 (jnp.ndarray([batch_size])): Batch of axio-dilaton used as initial guesses.
         model (jvc.FluxVacuaFinder): Jaxvacua model specifying geometry.
-        use_scipy (bool): Use scipy.optimize.root() to find solutions. Defaults to True.
+        tol (float): Tolerance on the F-term residual. With scipy, root() is called with
+            ``tol=1e-3 * tol`` and a point counts as solved if root() reports success and
+            ``max(abs(model.DW_x))`` at the solution is below ``tol``. With Newton's method,
+            a point counts as solved if the residual returned by
+            ``model.newton_method_flux_vacua`` is below ``tol``.
+        use_scipy (bool): Use scipy.optimize.root() (method 'hybr') to find solutions;
+            otherwise use jaxvacua's Newton method. Defaults to True.
         verbose (bool): Show solving progress. Defaults to False.
-        debug (bool): Log if terminated.
+        debug (bool): Log if terminated. Defaults to False.
 
     Returns:
         fluxes (jnp.ndarray([solved_size, 4*(model.h12+1)])): Fluxes with found solution.
         moduli (jnp.ndarray([solved_size, model.h12])): Moduli at solution.
         tau (jnp.ndarray([solved_size])): Axio-dilaton at solution.
         idx_solved (jnp.ndarray([batch_size])): Boolean mask over input batch, indicating position of solved fluxes.
+
+    Raises:
+        NotImplementedError: If ``moduli0`` is one-dimensional and ``use_scipy`` is True.
+        AssertionError: If ``moduli0`` has neither one nor two axes.
     """
     if debug:
         print("Solving...")
@@ -269,7 +310,14 @@ def solve(
     )
 
 
-def map_to_FD(fluxes, moduli, tau, model, debug, debug_deep):
+def map_to_FD(
+    fluxes: jax.Array,
+    moduli: jax.Array,
+    tau: jax.Array,
+    model: Any,
+    debug: bool,
+    debug_deep: bool,
+) -> tuple[jax.Array, jax.Array, jax.Array]:
     r"""Maps fluxes, moduli and axio-dilaton to fundamental domain of SL(2,Z) and monodromy transformations. If the mapping is not possible, the original data points are returned.
 
     Args:
@@ -316,13 +364,18 @@ def map_to_FD(fluxes, moduli, tau, model, debug, debug_deep):
     return jnp.asarray(fluxes), jnp.asarray(moduli), jnp.asarray(tau)
 
 
-def check_tadpole(model, fluxes, debug=False):
+def check_tadpole(
+    model: Any, fluxes: jax.Array, debug: bool = False
+) -> tuple[jax.Array, jax.Array]:
     r"""Checks tadpole bound for set of fluxes.
+
+    A flux vector is kept if ``0 < N_flux <= Q``, with ``N_flux = model.tadpole(fluxes)``
+    and ``Q = model.Q()``.
 
     Args:
         model (jvc.FluxVacuaFinder): Jaxvacua model specifying geometry.
         fluxes (jnp.ndarray([batch_size, 4*(model.h12+1)])): Batch of fluxes.
-        debug (bool): Log if terminated.
+        debug (bool): Log if terminated. Defaults to False.
 
     Returns:
         fluxes (jnp.ndarray([valid_size, 4*(model.h12+1)])): Fluxes within tadpole bound.
@@ -339,14 +392,22 @@ def check_tadpole(model, fluxes, debug=False):
     return fluxes, idx_valid
 
 
-def check_FD(fluxes, moduli, tau, model=None, debug=False):
+def check_FD(
+    fluxes: jax.Array,
+    moduli: jax.Array,
+    tau: jax.Array,
+    model: Any = None,
+    debug: bool = False,
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
     r"""Checks if input in fundamental domain of SL(2,Z).
+
+    A point is kept if ``Im(tau) > 0.83`` and ``|Re(tau)| < 0.5``.
 
     Args:
         fluxes (jnp.ndarray([batch_size, 4*(model.h12+1)])): Batch of fluxes.
         moduli (jnp.ndarray([batch_size, model.h12])): Batch of moduli.
         tau (jnp.ndarray([batch_size])): Batch of axio-dilaton.
-        debug (bool): Log if terminated.
+        debug (bool): Log if terminated. Defaults to False.
         model (jvc.FluxVacuaFinder): Needed for consistency (will be changed). Defaults to None.
 
     Returns:
@@ -364,15 +425,24 @@ def check_FD(fluxes, moduli, tau, model=None, debug=False):
     return fluxes, moduli, tau, idx_tau
 
 
-def check_LCS(fluxes, moduli, tau, model, debug=False):
+def check_LCS(
+    fluxes: jax.Array,
+    moduli: jax.Array,
+    tau: jax.Array,
+    model: Any,
+    debug: bool = False,
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
     r"""Checks if input in LCS region.
+
+    A point is kept if ``Im(z)`` lies strictly inside the Kähler cone given by
+    ``model.lcs_tree.hyperplanes``, i.e. every entry of ``hyperplanes @ Im(z)`` is positive.
 
     Args:
         fluxes (jnp.ndarray([batch_size, 4*(model.h12+1)])): Batch of fluxes.
         moduli (jnp.ndarray([batch_size, model.h12])): Batch of moduli.
         tau (jnp.ndarray([batch_size])): Batch of axio-dilaton.
         model (jvc.FluxVacuaFinder): Jaxvacua model specifying geometry.
-        debug (bool): Log if terminated.
+        debug (bool): Log if terminated. Defaults to False.
 
     Returns:
         fluxes (jnp.ndarray([valid_size, 4*(model.h12+1)])): Fluxes within LCS region.
@@ -390,19 +460,21 @@ def check_LCS(fluxes, moduli, tau, model, debug=False):
 
 
 def check_monodromy_FD(
-    fluxes,
-    moduli,
-    tau,
-    model=None,
-    debug=False,
-):
+    fluxes: jax.Array,
+    moduli: jax.Array,
+    tau: jax.Array,
+    model: Any = None,
+    debug: bool = False,
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
     r"""Checks if input in fundamental domain of monodromy transformations.
+
+    A point is kept if ``|Re(z^i)| < 0.5`` for every modulus ``z^i``.
 
     Args:
         fluxes (jnp.ndarray([batch_size, 4*(model.h12+1)])): Batch of fluxes.
         moduli (jnp.ndarray([batch_size, model.h12])): Batch of moduli.
         tau (jnp.ndarray([batch_size])): Batch of axio-dilaton.
-        debug (bool): Log if terminated.
+        debug (bool): Log if terminated. Defaults to False.
         model (jvc.FluxVacuaFinder): Needed for consistency (will be changed). Defaults to None.
 
     Returns:
@@ -424,21 +496,31 @@ def check_monodromy_FD(
     return fluxes, moduli, tau, idx_domain
 
 
-def get_unique(fluxes, moduli, tau, idx_samples, debug=False):
+def get_unique(
+    fluxes: jax.Array,
+    moduli: jax.Array,
+    tau: jax.Array,
+    idx_samples: jax.Array,
+    debug: bool = False,
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
     r"""Return numerically unique flux vacua.
+
+    Uniqueness is decided by the flux vector alone. For repeated fluxes the first
+    occurrence is kept, and the output is sorted lexicographically by fluxes (as returned
+    by ``jnp.unique``).
 
     Args:
         fluxes (jnp.ndarray([batch_size, 4*(model.h12+1)])): Batch of fluxes.
         moduli (jnp.ndarray([batch_size, model.h12])): Batch of moduli.
         tau (jnp.ndarray([batch_size])): Batch of axio-dilaton.
-        idx_samples (jnp.ndarray([batch_size])): Boolean mask recording original position in sample array.
-        debug (bool): Log if terminated.
+        idx_samples (jnp.ndarray([batch_size])): Integer positions of the inputs in the original sample array.
+        debug (bool): Log if terminated. Defaults to False.
 
     Returns:
         fluxes (jnp.ndarray([unique_size, 4*(model.h12+1)])): Unique fluxes.
         moduli (jnp.ndarray([unique_size, model.h12])): Unique moduli.
         tau (jnp.ndarray([unique_size])): Unique axio-dilaton
-        idx_samples (jnp.ndarray([batch_size])): Updated boolean mask indicating unique original position in sample array.
+        idx_samples (jnp.ndarray([unique_size])): Positions of the unique vacua in the original sample array.
     """
     if debug:
         print("Filtering unique...")
@@ -451,18 +533,56 @@ def get_unique(fluxes, moduli, tau, idx_samples, debug=False):
 
 
 def validate_vacua(
-    fluxes,
-    moduli,
-    tau,
-    idx_samples,
-    model,
-    out,
-    tol,
-    use_scipy,
-    plot_trajectory=False,
-    debug=False,
-    debug_deep=False,
-):
+    fluxes: jax.Array,
+    moduli: jax.Array,
+    tau: jax.Array,
+    idx_samples: jax.Array,
+    model: Any,
+    out: dict[str, Any],
+    tol: float,
+    use_scipy: bool,
+    plot_trajectory: bool = False,
+    debug: bool = False,
+    debug_deep: bool = False,
+) -> tuple[
+    jax.Array | None, jax.Array | None, jax.Array | None, jax.Array | None, dict[str, Any]
+]:
+    r"""Applies all validity checks to a batch of generated flux vacua.
+
+    The steps run in this order, each on the survivors of the previous one: the tadpole
+    bound (:func:`check_tadpole`); solving the F-term conditions with the generated moduli
+    and axio-dilaton as initial guesses (:func:`solve`); mapping to the fundamental domain
+    (:func:`map_to_FD`); :func:`check_FD`, :func:`check_LCS` and :func:`check_monodromy_FD`;
+    and the removal of duplicate fluxes (:func:`get_unique`). The counts are written to
+    ``out`` under ``"failed_tadpole"``, ``"failed_to_solve"``, ``"failed_tau_FD"``,
+    ``"failed_LCS"``, ``"failed_m_FD"``, ``"valid"`` (number passing all checks) and
+    ``"valid_unique"`` (number of distinct fluxes among them). Keys of steps that are not
+    reached are left unchanged, except ``"valid"`` and ``"valid_unique"``, which are then
+    set to 0.
+
+    Args:
+        fluxes (jnp.ndarray([batch_size, 4*(model.h12+1)])): Batch of generated fluxes.
+        moduli (jnp.ndarray([batch_size, model.h12])): Generated moduli, used as initial guesses.
+        tau (jnp.ndarray([batch_size])): Generated axio-dilaton, used as initial guesses.
+        idx_samples (jnp.ndarray([batch_size])): Integer positions of the inputs in the original sample array.
+        model (jvc.FluxVacuaFinder): Jaxvacua model specifying geometry.
+        out (dict): Dictionary for the console output; updated in place and returned.
+        tol (float): Tolerance passed to :func:`solve`.
+        use_scipy (bool): Use scipy.optimize.root() instead of jaxvacua's Newton method.
+        plot_trajectory (bool): If True and some points are solved, save the initial moduli of
+            the solved points (``z0``), their solutions before the mapping to the fundamental
+            domain (``solver_raw_z``) and a mask of those passing the three checks after
+            the mapping (``solver_is_valid``) to 'data/sol_trajectories/{h12}_{h11}_trajectory.npz' in the
+            current working directory. Defaults to False.
+        debug (bool): Log the start and end of each step. Defaults to False.
+        debug_deep (bool): Show progress bars while solving and mapping. Defaults to False.
+
+    Returns:
+        tuple: ``(fluxes, moduli, tau, idx_samples, out)`` for the unique valid vacua: fluxes,
+            moduli and axio-dilaton at the solution, mapped to the fundamental domain, their
+            positions in the original sample array, and the updated ``out``. The first four
+            entries are None if no vacuum passes all checks.
+    """
     # Check tadpole
     fluxes, idx_valid_tadpole = check_tadpole(model, fluxes, debug)
     idx_samples = idx_samples[idx_valid_tadpole]
@@ -536,7 +656,31 @@ def validate_vacua(
         return None, None, None, None, out
 
 
-def convert_samples_to_data(samples, discr, gs_inv=None):
+def convert_samples_to_data(
+    samples: list, discr: float, gs_inv: float | None = None
+) -> tuple:
+    r"""Converts processed samples to fluxes, complex moduli and axio-dilaton.
+
+    The generated moduli and axio-dilaton are discretised; their entries are divided by
+    ``discr``.
+
+    Args:
+        samples (list): ``[fluxes, moduli, tau]`` for one prompt, as returned per prompt by
+            :func:`process_samples`. ``fluxes`` has shape [num_samples, 4*(h12+1)];
+            ``moduli`` has shape [num_samples, 2*h12], with the real parts in the first h12
+            columns and the imaginary parts in the last h12; ``tau`` has shape
+            [num_samples, 2], holding Re(tau) and Im(tau), or [num_samples, 1], holding only
+            Re(tau), if ``gs_inv`` is given.
+        discr (float): Discretisation factor.
+        gs_inv (float | None): Discretised value of the 1/g_s prompt (``discr`` times 1/g_s).
+            If given, Im(tau) is set to ``gs_inv / discr`` and only the first column of
+            ``tau`` is used. Defaults to None.
+
+    Returns:
+        tuple: ``(fluxes, moduli, tau)``: the fluxes, unchanged, with shape
+            [num_samples, 4*(h12+1)]; the complex moduli, shape [num_samples, h12]; and the
+            complex axio-dilaton, shape [num_samples].
+    """
     fluxes = samples[0]
     moduli = samples[1]
     moduli_real, moduli_imag = jnp.split(moduli, 2, axis=-1)
@@ -549,7 +693,33 @@ def convert_samples_to_data(samples, discr, gs_inv=None):
     return fluxes, moduli, tau
 
 
-def process_sequence(sequence, tokenizer, conds, split_tokens=None):
+def process_sequence(
+    sequence: np.ndarray | Sequence[str],
+    tokenizer: DictTokenizer,
+    conds: int | np.ndarray,
+    split_tokens: Sequence[str] | np.ndarray | None = None,
+) -> list[np.ndarray] | np.ndarray | None:
+    r"""Processes single token sequence.
+
+    Without ``split_tokens``, all tokens after ``<BOS>`` are converted to integers. With
+    ``split_tokens``, the part between ``<BOS>`` and ``<EOS>`` is split at the split tokens
+    and each part is converted separately.
+
+    Args:
+        sequence (np.ndarray([seq_len])): One-dimensional array containing sequence of tokens as strings.
+        tokenizer (data_loader.DictTokenizer): Tokenizer.
+        conds (int or np.ndarray([num_conds])): Correct lengths of each part of sequence
+            (a single length if ``split_tokens`` is None).
+        split_tokens (list[str]): Split tokens indicating where to split the sequence, each
+            expected exactly once. Defaults to None.
+
+    Returns:
+        list[np.ndarray] | np.ndarray | None: With ``split_tokens``, a list with one
+            integer array per part; otherwise one integer array. None if the sequence is
+            invalid: no unique ``<BOS>`` or a part of the wrong length; with ``split_tokens``
+            also a missing or repeated split token or ``<EOS>``, an invalid number in a part, or
+            any other exception while parsing.
+    """
     sequence = np.array(sequence)
     r"""Processes single token sequence.
                                 
@@ -605,7 +775,41 @@ def process_sequence(sequence, tokenizer, conds, split_tokens=None):
 
 
 @jax.jit
-def process_sample_batch(tokens, token_value, is_separator_token, PLUS_ID, MINUS_ID, EOS_ID):
+def process_sample_batch(
+    tokens: jax.Array,
+    token_value: jax.Array,
+    is_separator_token: jax.Array,
+    PLUS_ID: int,
+    MINUS_ID: int,
+    EOS_ID: int,
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+    r"""Parses a batch of token-ID sequences into signed integers with one ``lax.scan``.
+
+    A number is a sign token (``+`` or ``-``) followed by one or more digit tokens; the
+    digits are combined in base 1000 (hard-coded). A number is emitted at the position of
+    the token that ends it (a sign, a separator or ``<EOS>``), provided it has a sign and
+    at least one digit.
+
+    Args:
+        tokens (jnp.ndarray([batch_size, seq_len])): Integer token IDs.
+        token_value (jnp.ndarray([vocab_size])): Digit value of each token ID, -1 for
+            tokens that are not digits.
+        is_separator_token (jnp.ndarray([vocab_size])): Boolean mask of the separator token IDs.
+        PLUS_ID (int): Token ID of ``+``.
+        MINUS_ID (int): Token ID of ``-``.
+        EOS_ID (int): Token ID of ``<EOS>``.
+
+    Returns:
+        tuple: ``(emitted_values, emit_mask, segment, scan_valid)``, where
+            ``emitted_values`` (jnp.ndarray([batch_size, seq_len])) holds the signed integer
+            emitted at each position and 0 elsewhere; ``emit_mask``
+            (jnp.ndarray([batch_size, seq_len])) marks the positions where a number is emitted;
+            ``segment`` (jnp.ndarray([batch_size, seq_len])) counts the separator tokens strictly
+            before each position, so a number emitted at a separator belongs to the part that
+            the separator closes; and ``scan_valid`` (jnp.ndarray([batch_size])) is False for
+            sequences with a digit outside a signed number, or with a sign followed by another
+            sign, a separator or ``<EOS>`` before any digit.
+    """
     values = token_value[tokens]
     is_number = values >= 0
     is_plus  = tokens == PLUS_ID
@@ -733,19 +937,42 @@ def process_sample_batch(tokens, token_value, is_separator_token, PLUS_ID, MINUS
 
 
 def process_samples(
-    samples_lst, tokenizer, conds, split_tokens=None, return_valid_idx=False
+    samples_lst: Sequence[Any],
+    tokenizer: DictTokenizer,
+    conds: np.ndarray,
+    split_tokens: Sequence[str] | np.ndarray | None = None,
+    return_valid_idx: bool = False,
+) -> (
+    list[jax.Array]
+    | list[list[jax.Array]]
+    | tuple[list[list[jax.Array]], list[jax.Array]]
 ):
     r"""Processes generated samples for one or multiple prompts.
 
+    With ``split_tokens``, the samples of each prompt are parsed in one batch by
+    :func:`process_sample_batch`. A sample is kept if it is structurally valid, contains
+    exactly ``len(cond) - 1`` separator tokens and each part contains exactly the expected
+    number of integers. Without ``split_tokens``, each sequence is parsed by
+    :func:`process_sequence`.
+
     Args:
-        samples_lst (list): List of sampled sequences for each prompt.
-        tokenizer (utils.DictTokenizer): Tokenizer.
+        samples_lst (list): List of sampled sequences for each prompt. With ``split_tokens``,
+            one array of integer token IDs of shape [num_samples, seq_len] per prompt (as
+            returned by ``jax_transformer.utils.sample``); without, an iterable of
+            token-string sequences per prompt.
+        tokenizer (data_loader.DictTokenizer): Tokenizer.
         conds (np.ndarray([num_prompts, num_conds])): Correct lengths of each part of sequence for each prompt.
         split_tokens (np.ndarray([num_conds-1])): Split tokens indicating where to split the sequence. Defaults to None.
-        return_valid_idx (bool): Whether to additionally return indices of valid samples. Defaults to False.
+        return_valid_idx (bool): Whether to additionally return indices of valid samples.
+            Only used if ``split_tokens`` is given. Defaults to False.
 
     Returns:
-        samples_valid (list): Processed samples for each prompt. If return_valid_idx is True, also returns indices of valid samples.
+        list | tuple: Processed samples for each prompt. With ``split_tokens``, a list over
+            prompts of lists with one array of shape [num_valid, cond[k]] per part; if
+            ``return_valid_idx`` is True, the tuple ``(samples_valid, valid_idx_per_prompt)``,
+            where ``valid_idx_per_prompt`` holds the row indices of the valid samples of each
+            prompt. Without ``split_tokens``, a list over prompts of arrays of shape
+            [num_valid, conds[i]].
     """
     if split_tokens is None:
         samples_valid = []

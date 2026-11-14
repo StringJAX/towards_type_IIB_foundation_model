@@ -10,12 +10,13 @@ from pathlib import Path
 import pickle
 import sys
 import time
+from typing import Any
 
 import numpy as np
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
-HODGE_PAIRS = (
+REPO_ROOT: Path = Path(__file__).resolve().parents[1]
+HODGE_PAIRS: tuple[tuple[int, int], ...] = (
     (2, 120), (2, 128), (2, 132), (2, 144), (2, 272),
     (3, 99), (3, 107), (3, 115), (3, 119), (3, 243),
     (4, 98), (4, 118), (4, 122), (4, 130), (4, 142),
@@ -23,12 +24,36 @@ HODGE_PAIRS = (
 )
 # These configs select exactly the novelty-reference datasets used by
 # transformer/evaluate.ipynb. No neural-network checkpoint is loaded.
-REFERENCE_RUNS = {"nflux": 38, "w0": 39, "gs_inv": 46, "unconditional": 38}
-TARGETS = {"nflux": 40, "w0": 1.1, "gs_inv": 4.0, "unconditional": None}
+REFERENCE_RUNS: dict[str, int] = {"nflux": 38, "w0": 39, "gs_inv": 46, "unconditional": 38}
+TARGETS: dict[str, float | None] = {"nflux": 40, "w0": 1.1, "gs_inv": 4.0, "unconditional": None}
 
 
-def load_samples(path: Path, mode: str, discr: float | None = None):
-    """Validate the full geometry panel and recover its coordinate scale."""
+def load_samples(path: Path, mode: str, discr: float | None = None) -> tuple[Any, float, dict[str, Any]]:
+    """Validate the full geometry panel and recover its coordinate scale.
+
+    The optional JSON sidecar ``path.with_suffix(".json")`` written by
+    :func:`diffusion.src.pipeline.sample_and_save` is checked against
+    ``mode``, :data:`HODGE_PAIRS` and ``discr``.
+
+    Args:
+        path (Path): Pickled panel: one ``[flux, moduli, tau]`` entry per
+            geometry in :data:`HODGE_PAIRS` order, with widths
+            ``4 * (h12 + 1)``, ``2 * h12`` and 1 (``gs_inv``) or 2.
+        mode (str): Evaluation mode, a key of :data:`REFERENCE_RUNS`.
+        discr (float | None): Scale of the integer coordinates; ``None`` takes
+            the sidecar's value, else 10.0. Defaults to ``None``.
+
+    Returns:
+        tuple[Any, float, dict[str, Any]]: The unpickled panel, the scale
+            ``discr`` and the sidecar metadata (empty without a sidecar).
+
+    Raises:
+        ValueError: If the sidecar's mode or geometry order disagrees,
+            ``discr`` is not positive and finite or disagrees with the
+            sidecar, ``4 * discr`` is not an integer in mode ``gs_inv``, or an
+            entry is missing, malformed, of the wrong shape or not finite.
+        FileNotFoundError: If ``path`` does not exist.
+    """
     metadata_path = path.with_suffix(".json")
     metadata = json.loads(metadata_path.read_text()) if metadata_path.exists() else {}
     if "mode" in metadata and metadata["mode"] != mode:
@@ -71,6 +96,42 @@ def evaluate_samples(
 
     Conditional distributions retain the transformer's {prompt: {dist, validity}}
     structure. A JSON summary also records counts and novelty per geometry.
+
+    The process environment variable ``JAX_PLATFORMS`` is set to ``cpu`` and
+    float64 is enabled before ``jaxvacua`` and ``transformer/evaluation_scripts``
+    are imported. Novelty is measured against the training data of the
+    reference run in :data:`REFERENCE_RUNS`. For ``w0`` and ``gs_inv`` the
+    prompt key uses the target scaled by ``discr`` and rounded.
+
+    Args:
+        mode (str): Key of :data:`REFERENCE_RUNS`.
+        samples_file (str | Path | None): Sample file; its suffix is set to
+            ``.p`` if different, and a relative path is taken inside
+            ``diffusion/samples``. Defaults to ``diffusion_{mode}_samples.p``.
+        output_dir (str | Path | None): Output directory. Defaults to
+            ``diffusion/evaluations``.
+        discr (float | None): Coordinate scale, as for :func:`load_samples`.
+            Defaults to ``None``.
+        tol (float): Positive, finite solver tolerance passed to
+            ``validate_vacua``. Defaults to ``1e-10``.
+        use_newton (bool): Pass ``use_scipy=False`` to ``validate_vacua``
+            (recorded as ``newton``) instead of ``True`` (``scipy_root``).
+            Defaults to ``False``.
+        verbose (bool): Passed to ``print_console_output``. Defaults to
+            ``False``.
+
+    Returns:
+        Path: The result pickle ``{stem}_valid.p``, holding the per-prompt
+            distributions or, for ``unconditional``, the per-geometry counts; the
+            summary is written next to it as ``{stem}_summary.json``.
+
+    Raises:
+        ValueError: If ``mode`` is unknown, ``tol`` is not positive and
+            finite, or the samples fail :func:`load_samples`.
+        FileExistsError: If an output file already exists; this is checked
+            before loading the samples.
+        FileNotFoundError: If the samples file, the reference run's config, one
+            of its training-data files or ``geometry_log_degree_10.p`` is missing.
     """
     if mode not in REFERENCE_RUNS:
         raise ValueError(f"Unknown evaluation mode {mode!r}")
@@ -187,7 +248,8 @@ def evaluate_samples(
     return result_path
 
 
-def main():
+def main() -> None:
+    """Parse command-line arguments and run :func:`evaluate_samples`."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=REFERENCE_RUNS, required=True)
     parser.add_argument("--samples_file", help="Filename/stem inside diffusion/samples, or an absolute path")

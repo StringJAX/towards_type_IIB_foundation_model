@@ -12,8 +12,8 @@ from .masking import canonical_mask_schedule, canonical_time_conditioning
 from .model.flux_transformer import FluxVacuumTransformer, FluxVacuumTransformerConfig
 
 
-CHECKPOINT_FORMAT_VERSION = 5
-CHECKPOINT_KIND = "flux_vacuum_transformer"
+CHECKPOINT_FORMAT_VERSION: int = 5
+CHECKPOINT_KIND: str = "flux_vacuum_transformer"
 
 
 def checkpoint_mask_schedule(payload: Mapping[str, Any]) -> str:
@@ -21,6 +21,17 @@ def checkpoint_mask_schedule(payload: Mapping[str, Any]) -> str:
 
     Checkpoints created before this option existed used the sine schedule, so
     an absent value intentionally resolves to ``sine``.
+
+    Args:
+        payload (Mapping[str, Any]): Loaded checkpoint. The schedule is read
+            from ``run_config["diffusion"]["mask_schedule"]``, otherwise from
+            ``run_config["sampling"]["mask_schedule"]``.
+
+    Returns:
+        str: Canonical schedule name, ``"sine"`` or ``"linear"``.
+
+    Raises:
+        ValueError: If the recorded schedule is not a supported name.
     """
 
     run_config = payload.get("run_config", {})
@@ -35,7 +46,19 @@ def checkpoint_mask_schedule(payload: Mapping[str, Any]) -> str:
 
 
 def checkpoint_time_conditioning(payload: Mapping[str, Any]) -> str:
-    """Read the architecture's discrete, continuous, or absent time input."""
+    """Read the architecture's discrete, continuous, or absent time input.
+
+    Args:
+        payload (Mapping[str, Any]): Loaded checkpoint; the mode is read from
+            ``model_config["time_conditioning"]``.
+
+    Returns:
+        str: ``"discrete"``, ``"continuous"`` or ``"none"``; ``"discrete"``
+            when ``model_config`` is absent, is not a mapping, or lacks the field.
+
+    Raises:
+        ValueError: If the recorded mode is not a supported name.
+    """
 
     model_config = payload.get("model_config", {})
     if isinstance(model_config, Mapping):
@@ -50,6 +73,26 @@ def load_flux_transformer_model(
     *,
     device: str | torch.device,
 ) -> tuple[FluxVacuumTransformer, dict[str, Any]]:
+    """Load a FluxVacuumTransformer checkpoint for inference.
+
+    The file is loaded with ``weights_only=False``, i.e. fully unpickled, so
+    only trusted checkpoints should be loaded. The state dictionary is loaded
+    strictly; the model is moved to ``device``, put in evaluation mode and has
+    gradients disabled.
+
+    Args:
+        path (str | Path): Checkpoint file.
+        device (str | torch.device): Device for the model parameters.
+
+    Returns:
+        tuple[FluxVacuumTransformer, dict[str, Any]]: The model and the full
+            checkpoint payload (tokenizer, geometry and run metadata included).
+
+    Raises:
+        ValueError: If ``kind`` is not :data:`CHECKPOINT_KIND`, the format
+            version is not :data:`CHECKPOINT_FORMAT_VERSION`, or the moduli
+            statistics fail :func:`validate_moduli_statistics`.
+    """
     payload = torch.load(path, map_location="cpu", weights_only=False)
     if payload.get("kind") != CHECKPOINT_KIND:
         raise ValueError(f"Not a FluxVacuumTransformer checkpoint: {path}")

@@ -26,6 +26,45 @@ from .observable_conditioning import (
 
 @dataclass(frozen=True)
 class FluxVacuumTransformerConfig:
+    """Architecture settings of :class:`FluxVacuumTransformer`.
+
+    Attributes:
+        input_vocab_size (int): Value tokens plus ``PAD`` and ``MASK``; must
+            equal ``output_vocab_size + 2``.
+        output_vocab_size (int): Number of value tokens.
+        pad_token_id (int): Must equal ``output_vocab_size``.
+        mask_token_id (int): Must equal ``output_vocab_size + 1``.
+        num_geometries (int): Rows of the per-geometry normalisation tables.
+        geometry_feature_mean (tuple[float, float, float]): Finite means of
+            the ``(h11, h12, tadpole_bound)`` features.
+        geometry_feature_std (tuple[float, float, float]): Standard deviations
+            of those features; finite and positive.
+        max_h12 (int): Largest ``h12``.
+        max_flux_dim (int): Padded flux length; must equal
+            ``4 * (max_h12 + 1)``.
+        model_dim (int): Model width.
+        attention_heads (int): Number of attention heads.
+        mlp_ratio (int): MLP hidden width in units of ``model_dim``.
+        dropout (float): Dropout probability.
+        shared_transformer_layers (int): Shared encoder blocks; at least 1.
+        flux_policy_layers (int): Flux-branch blocks; at least 1.
+        moduli_decoder_layers (int): Moduli cross-attention blocks.
+        moduli_coordinate_margin_std (float): Non-negative margin, in units of
+            the per-coordinate standard deviation, added outside the stored
+            quantiles to form the initializer clamping bounds.
+        observable_conditioning_enabled (bool): Whether to build an observable
+            conditioner.
+        observable_token_width (int): Positive hidden width of the observable
+            encoder.
+        conditional_observable (str): Single conditioned observable, used when
+            ``conditional_observables`` is empty.
+        conditional_observables (tuple[str, ...]): Ordered, unique conditioned
+            observables.
+        conditional_transform_delta (float): Positive offset of the
+            ``W0_abs`` transform.
+        time_conditioning (str): ``"discrete"``, ``"continuous"`` or ``"none"``.
+    """
+
     input_vocab_size: int
     output_vocab_size: int
     pad_token_id: int
@@ -51,6 +90,13 @@ class FluxVacuumTransformerConfig:
     time_conditioning: str = "discrete"
 
     def __post_init__(self) -> None:
+        """Validate the settings.
+
+        Raises:
+            ValueError: If any constraint stated in the class docstring is
+                violated, or an observable name is not exactly one of
+                :data:`SUPPORTED_CONDITIONAL_OBSERVABLES`.
+        """
         if self.shared_transformer_layers <= 0 or self.flux_policy_layers <= 0:
             raise ValueError("Both shared and flux-policy branches require at least one block")
         if self.max_flux_dim != 4 * (self.max_h12 + 1):
@@ -104,11 +150,21 @@ class FluxVacuumTransformerConfig:
 
 
     def to_dict(self) -> dict[str, Any]:
+        """Return the settings as a dictionary (:func:`dataclasses.asdict`).
+
+        Returns:
+            dict[str, Any]: Field names mapped to values.
+        """
         return asdict(self)
 
     @property
     def conditioned_observables(self) -> tuple[str, ...]:
-        """Canonical ordered observables, including legacy single-token configs."""
+        """Canonical ordered observables, including legacy single-token configs.
+
+        Returns:
+            tuple[str, ...]: ``conditional_observables`` if non-empty, otherwise
+                ``(conditional_observable,)``.
+        """
 
         if self.conditional_observables:
             return self.conditional_observables
@@ -119,7 +175,19 @@ def flux_active_mask(
     h12: torch.Tensor,
     max_flux_dim: int,
 ) -> torch.Tensor:
-    """Return the structural mask for ``L = 4 * (h12 + 1)``."""
+    """Return the structural mask for ``L = 4 * (h12 + 1)``.
+
+    Args:
+        h12 (torch.Tensor): ``h12`` per row, flattened to shape ``(batch,)``.
+        max_flux_dim (int): Padded flux length.
+
+    Returns:
+        torch.Tensor: Boolean mask of shape ``(batch, max_flux_dim)``, ``True``
+            on each row's first ``4 * (h12 + 1)`` positions.
+
+    Raises:
+        ValueError: If an ``h12`` value lies outside ``[1, 5]``.
+    """
 
     h12 = h12.long().reshape(-1)
     if bool(((h12 < 1) | (h12 > 5)).any()):
@@ -130,6 +198,15 @@ def flux_active_mask(
 
 
 def moduli_query_mask(h12: torch.Tensor) -> torch.Tensor:
+    """Return which of the six moduli queries (five ``z`` slots, then ``tau``) are used.
+
+    Args:
+        h12 (torch.Tensor): ``h12`` per row, flattened to shape ``(batch,)``.
+
+    Returns:
+        torch.Tensor: Boolean mask of shape ``(batch, 6)``: the first ``h12``
+            ``z`` slots and the ``tau`` slot are ``True``.
+    """
     h12 = h12.long().reshape(-1)
     z_index = torch.arange(5, device=h12.device).unsqueeze(0)
     z_active = z_index < h12.unsqueeze(1)
@@ -148,6 +225,19 @@ class FluxVacuumTransformer(nn.Module):
         *,
         moduli_statistics: dict[str, Any] | None = None,
     ) -> None:
+        """Build the model.
+
+        Args:
+            config (FluxVacuumTransformerConfig): Architecture settings.
+            moduli_statistics (dict[str, Any] | None): Per-geometry moduli
+                normalisation statistics (see
+                :func:`validate_moduli_statistics`), or ``None`` for neutral
+                placeholders. Defaults to ``None``.
+
+        Raises:
+            ValueError: If the moduli statistics give non-finite values,
+                non-positive standard deviations or reversed bounds.
+        """
         super().__init__()
         self.config = config
         dim = config.model_dim
@@ -241,6 +331,25 @@ class FluxVacuumTransformer(nn.Module):
     def _normalization_tensors(
         self, stats: dict[str, Any] | None
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Build the moduli normalisation and clamping tables.
+
+        Rows are looked up as ``stats["geometries"][str(geometry_id)]``; a
+        missing row keeps mean 0, standard deviation 1 and bounds ``[-10, 10]``.
+        Otherwise the bounds are the stored quantiles widened by
+        ``moduli_coordinate_margin_std`` standard deviations.
+
+        Args:
+            stats (dict[str, Any] | None): Moduli statistics, or ``None``.
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+                Mean, standard deviation, lower and upper bound, each ``float32``
+                of shape ``(num_geometries, 6, 2)``.
+
+        Raises:
+            ValueError: If a table is not finite, a standard deviation is not
+                positive, or a lower bound exceeds its upper bound.
+        """
         mean = torch.zeros(self.config.num_geometries, 6, 2, dtype=torch.float32)
         std = torch.ones_like(mean)
         lower = torch.full_like(mean, -10.0)
@@ -279,7 +388,20 @@ class FluxVacuumTransformer(nn.Module):
         h11: torch.Tensor,
         h12: torch.Tensor,
     ) -> torch.Tensor:
-        """Build normalized physical ``(h11, h12, tadpole_bound)`` features."""
+        """Build normalised physical ``(h11, h12, tadpole_bound)`` features.
+
+        The code sets ``tadpole_bound = h11 + h12 + 2``.
+
+        Args:
+            h11 (torch.Tensor): ``h11`` per row.
+            h12 (torch.Tensor): ``h12`` per row.
+
+        Returns:
+            torch.Tensor: Standardised features of shape ``(batch, 3)``.
+
+        Raises:
+            ValueError: If ``h11`` and ``h12`` differ in size.
+        """
 
         h11_f = h11.float().reshape(-1)
         h12_f = h12.float().reshape(-1)
@@ -297,14 +419,17 @@ class FluxVacuumTransformer(nn.Module):
 
     @property
     def geometry_feature_mean(self) -> torch.Tensor:
+        """torch.Tensor: Stored feature means ``(h11, h12, tadpole_bound)``, shape ``(3,)``."""
         return torch.stack((self.h11_mean, self.h12_mean, self.tadpole_mean))
 
     @property
     def geometry_feature_std(self) -> torch.Tensor:
+        """torch.Tensor: Stored feature standard deviations, shape ``(3,)``."""
         return torch.stack((self.h11_std, self.h12_std, self.tadpole_std))
 
     @property
     def time_conditioner(self) -> nn.Module | None:
+        """nn.Module | None: The time embedding module, or ``None`` without time conditioning."""
         if self.config.time_conditioning == "continuous":
             return self.mask_probability_mlp
         if self.config.time_conditioning == "discrete":
@@ -322,6 +447,37 @@ class FluxVacuumTransformer(nn.Module):
         observable_token: torch.Tensor | None = None,
         observable_active: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Run the shared encoder, optionally with prepended observable tokens.
+
+        Args:
+            tokens (torch.Tensor): Token IDs of shape ``(batch, max_flux_dim)``.
+            active_mask (torch.Tensor): Mask of the same shape; must equal
+                :func:`flux_active_mask` of ``h12``.
+            h11 (torch.Tensor): ``h11`` per row, shape ``(batch,)``.
+            h12 (torch.Tensor): ``h12`` per row, shape ``(batch,)``.
+            time_condition (torch.Tensor | None): Timestep (discrete) or mask
+                probability (continuous) per row; required unless time
+                conditioning is ``none``, in which case it is ignored.
+            observable_token (torch.Tensor | None): Observable tokens of shape
+                ``(batch, model_dim)`` or ``(batch, k, model_dim)``, placed
+                before the flux positions. Defaults to ``None``.
+            observable_active (torch.Tensor | None): Their activity mask, of
+                shape ``(batch,)`` or ``(batch, k)``; required with
+                ``observable_token``. Defaults to ``None``.
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor, torch.Tensor]: Hidden states of
+                shape ``(batch, k + max_flux_dim, model_dim)`` (``k = 0`` without
+                observable tokens), the AdaLN condition of shape
+                ``(batch, model_dim)``, and the boolean sequence mask of shape
+                ``(batch, k + max_flux_dim)``.
+
+        Raises:
+            ValueError: If a shape is inconsistent, an ``h12`` value lies
+                outside ``[1, 5]``, ``active_mask`` differs from the structural
+                mask, a time condition is missing, or only one
+                of ``observable_token`` and ``observable_active`` is given.
+        """
         active = active_mask.bool()
         if tokens.shape != active.shape or tokens.shape[1] != self.config.max_flux_dim:
             raise ValueError("tokens and active_mask must have shape [batch, max_flux_dim]")
@@ -389,6 +545,23 @@ class FluxVacuumTransformer(nn.Module):
         *,
         observable_context: ObservableConditioningContext | None = None,
     ) -> torch.Tensor:
+        """Return flux-policy logits.
+
+        Args:
+            tokens (torch.Tensor): Token IDs of shape ``(batch, max_flux_dim)``.
+            active_mask (torch.Tensor): Mask of the same shape.
+            h11 (torch.Tensor): ``h11`` per row, shape ``(batch,)``.
+            h12 (torch.Tensor): ``h12`` per row, shape ``(batch,)``.
+            time_condition (torch.Tensor | None): Time input, as for
+                :meth:`shared_encode`.
+            observable_context (ObservableConditioningContext | None):
+                Observable targets, or ``None``. Defaults to ``None``.
+
+        Returns:
+            torch.Tensor: Logits of shape
+                ``(batch, max_flux_dim, output_vocab_size)``, zero at inactive
+                positions.
+        """
         hidden = self.flux_hidden(
             tokens,
             active_mask,
@@ -410,11 +583,31 @@ class FluxVacuumTransformer(nn.Module):
         *,
         observable_context: ObservableConditioningContext | None = None,
     ) -> torch.Tensor:
-        """Return the normalized representation immediately before ``flux_head``.
+        """Return the normalised representation immediately before ``flux_head``.
 
         A selected physical observable enters as one explicit sequence token.
         Keeping the categorical head outside this method makes the feature
         boundary explicit without introducing a second flux-policy path.
+        A model with an observable conditioner but no ``observable_context``
+        uses zero, inactive observable tokens.
+
+        Args:
+            tokens (torch.Tensor): Token IDs of shape ``(batch, max_flux_dim)``.
+            active_mask (torch.Tensor): Mask of the same shape.
+            h11 (torch.Tensor): ``h11`` per row, shape ``(batch,)``.
+            h12 (torch.Tensor): ``h12`` per row, shape ``(batch,)``.
+            time_condition (torch.Tensor | None): Time input, as for
+                :meth:`shared_encode`.
+            observable_context (ObservableConditioningContext | None):
+                Observable targets, or ``None``. Defaults to ``None``.
+
+        Returns:
+            torch.Tensor: Normalised flux representations of shape
+                ``(batch, max_flux_dim, model_dim)``, zero at inactive positions.
+
+        Raises:
+            ValueError: If an active context is given to a model without an
+                observable conditioner, or an input is inconsistent.
         """
 
         observable_token: torch.Tensor | None = None
@@ -468,6 +661,20 @@ class FluxVacuumTransformer(nn.Module):
         h12: torch.Tensor,
         time_condition: torch.Tensor | None,
     ) -> dict[str, torch.Tensor]:
+        """Return the flux logits of :meth:`denoise` without an observable context.
+
+        Args:
+            tokens (torch.Tensor): Token IDs of shape ``(batch, max_flux_dim)``.
+            active_mask (torch.Tensor): Mask of the same shape.
+            h11 (torch.Tensor): ``h11`` per row, shape ``(batch,)``.
+            h12 (torch.Tensor): ``h12`` per row, shape ``(batch,)``.
+            time_condition (torch.Tensor | None): Time input, as for
+                :meth:`shared_encode`.
+
+        Returns:
+            dict[str, torch.Tensor]: ``{"logits": ...}`` with logits of shape
+                ``(batch, max_flux_dim, output_vocab_size)``.
+        """
         return {
             "logits": self.denoise(
                 tokens, active_mask, h11, h12, time_condition
@@ -482,6 +689,39 @@ class FluxVacuumTransformer(nn.Module):
         h12: torch.Tensor,
         normalization_geometry_id: torch.Tensor,
     ) -> dict[str, torch.Tensor]:
+        """Predict solver initial values for the moduli ``z`` and ``tau``.
+
+        The shared encoder reads the complete flux tokens at time input zero
+        (none if time conditioning is ``none``) and without observable tokens;
+        six queries (five ``z`` slots, then ``tau``) cross-attend to it. The
+        de-standardised coordinates ``(c0, c1)`` of each query are clamped to
+        the per-geometry bounds and mapped to ``z = c0 + i sinh(c1)`` and
+        ``tau = c0 + i exp(c1)``.
+
+        Args:
+            clean_tokens (torch.Tensor): Unmasked token IDs of shape
+                ``(batch, max_flux_dim)``.
+            active_mask (torch.Tensor): Mask of the same shape.
+            h11 (torch.Tensor): ``h11`` per row, shape ``(batch,)``.
+            h12 (torch.Tensor): ``h12`` per row, shape ``(batch,)``.
+            normalization_geometry_id (torch.Tensor): Row index into the
+                normalisation tables, shape ``(batch,)``.
+
+        Returns:
+            dict[str, torch.Tensor]: ``standardized``, ``coordinates_unclamped``
+                and ``coordinates`` of shape ``(batch, 6, 2)``;
+                ``coordinate_clamped`` (bool, same shape) marking active
+                coordinates changed by clamping; ``clamp_fraction``, the scalar
+                fraction of active coordinates clamped; ``query_mask`` of shape
+                ``(batch, 6)``; complex ``z`` of shape ``(batch, 5)`` and ``tau``
+                of shape ``(batch,)``, zero on unused ``z`` slots.
+
+        Raises:
+            FloatingPointError: If the standardised coordinates or the complex
+                values are not finite.
+            ValueError: If the inputs are inconsistent (see
+                :meth:`shared_encode`).
+        """
         time_condition = (
             None
             if self.config.time_conditioning == "none"

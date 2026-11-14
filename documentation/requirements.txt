@@ -1,0 +1,7 @@
+# Documentation toolchain. The API pages import the code, so the runtime dependencies are installed as well
+# (../requirements-cpu.txt, see ../.readthedocs.yaml).
+Sphinx
+sphinx-book-theme
+sphinx-copybutton
+sphinx-design
+myst-nb

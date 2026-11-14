@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import pickle
 import time
+from typing import Any
 
 import logging
 logging.getLogger("jax._src.xla_bridge").setLevel(logging.CRITICAL)
@@ -34,26 +35,74 @@ else:
 
 
 def evaluate(
-    RUN_ID, load_ckpt, *, single=False, nflux=None, w0=None, gs_inv=None,
-    num_samples=1000, tol=1e-10, sampling_temp=0.6, discr=10.0,
-    only_sample=False, samples_file=None, only_evaluate=False,
-    verbose=False, use_newton=False, cwd=None,
-):
+    RUN_ID: int, load_ckpt: str, *, single: bool = False, nflux: int | None = None,
+    w0: float | None = None, gs_inv: float | None = None,
+    num_samples: int = 1000, tol: float = 1e-10, sampling_temp: float = 0.6,
+    discr: float = 10.0, only_sample: bool = False, samples_file: str | None = None,
+    only_evaluate: bool = False, verbose: bool = False, use_newton: bool = False,
+    cwd: str | Path | None = None,
+) -> list[list[jax.Array]] | dict[str, dict[str, Any]]:
     """Sample a checkpoint and optionally validate the generated vacua.
 
-    Arguments match the command-line options. ``cwd`` is the directory holding
-    logs, checkpoints and data; it defaults to this file's directory.
+    Arguments other than ``cwd`` match the command-line options of :func:`main`.
+    The prompts are the geometries (h12, h11) listed in the code (only those with
+    h12 = 5 for RUN_ID 44 and 45), each optionally extended by one auxiliary
+    prompt (``nflux``, ``w0`` or ``gs_inv``). For each prompt, ``num_samples``
+    sequences are sampled and parsed by ``process_samples``. The samples are then
+    validated with ``validate_vacua`` on the prompted geometry or, for
+    geometry-only prompts with ``single=False``, on every geometry with the same
+    h12. The results, including the number of valid vacua found in the training
+    data, are printed.
 
-    With ``only_sample=True``, return the processed samples in geometry-prompt
-    order (each entry is [fluxes, discretized moduli, discretized tau], or None).
-    Optionally save them as data/samples/<samples_file>.p. ``only_evaluate``
-    loads that file instead of sampling.
+    Args:
+        RUN_ID (int): Trained run; selects 'logs/run_{RUN_ID}' and
+            'checkpoints/run_{RUN_ID}' under ``cwd``.
+        load_ckpt (str): Checkpoint path relative to 'checkpoints/run_{RUN_ID}',
+            e.g. 'GRPO_2/checkpoint_200'. If it contains 'GRPO', the model is loaded
+            with ``override_opt=True`` and the GRPO ID taken from the first path
+            component.
+        single (bool): Validate each sample only on the prompted geometry.
+            Defaults to False.
+        nflux (int | None): N_flux prompt. Defaults to None.
+        w0 (float | None): :math:`|W_0|` prompt, discretised as round(discr * w0).
+            Defaults to None.
+        gs_inv (float | None): 1/g_s prompt, discretised as round(discr * gs_inv).
+            Defaults to None.
+        num_samples (int): Number of samples per prompt. Defaults to 1000.
+        tol (float): Solver tolerance passed to ``validate_vacua``. Defaults to 1e-10.
+        sampling_temp (float): Sampling temperature. Defaults to 0.6.
+        discr (float): Discretisation factor of the moduli, the axio-dilaton, ``w0``
+            and ``gs_inv``. Defaults to 10.0.
+        only_sample (bool): Return the processed samples without validating them.
+            Defaults to False.
+        samples_file (str | None): Path of a pickle file with processed samples,
+            loaded if ``only_evaluate`` is True. Defaults to None.
+        only_evaluate (bool): Load the samples from ``samples_file`` instead of
+            sampling. Defaults to False.
+        verbose (bool): Print the number of samples failing each check.
+            Defaults to False.
+        use_newton (bool): Solve with jaxvacua's Newton method instead of
+            scipy.optimize.root(). Defaults to False.
+        cwd (str | Path | None): Directory holding 'logs', 'checkpoints' and 'data'.
+            Defaults to this file's directory.
 
-    Otherwise return a list of dictionaries, one per prompt/validation geometry,
-    with prompt, geometry, fluxes, moduli, tau, and sample_indices. Arrays contain
-    the unique validated solutions, including solver-refined complex moduli and
-    tau; arrays are None when no solutions survive. sample_indices refer to the
-    processed samples for that prompt. A sample can validate on multiple geometries.
+    Returns:
+        list | dict: If ``only_sample`` is True, the processed samples in prompt
+            order, one entry [fluxes, discretised moduli, discretised tau] per prompt.
+            Otherwise a dictionary keyed by ``"h12 h11 aux"``, where ``aux`` is the
+            auxiliary prompt value (discretised for ``w0`` and ``gs_inv``), with one
+            entry for each prompt that has at least one unique valid vacuum. Each entry
+            holds ``"dist"``, the N_flux, :math:`|W_0|` or Im(tau) values of the unique valid
+            vacua, and ``"validity"``, their number. For geometry-only prompts the
+            dictionary is empty.
+
+    Raises:
+        AssertionError: If ``RUN_ID`` or ``load_ckpt`` is None, more than one of
+            ``nflux``, ``w0`` and ``gs_inv`` is set, ``only_evaluate`` is set
+            without ``samples_file``, or ``nflux`` is not an int.
+        ValueError: If ``only_sample`` and ``only_evaluate`` are both True.
+        FileNotFoundError: If ``only_evaluate`` is True and ``samples_file`` does
+            not exist.
     """
     cwd = str(Path(cwd) if cwd is not None else Path(__file__).resolve().parent)
     logging.getLogger("jax._src.xla_bridge").setLevel(logging.CRITICAL)
@@ -410,7 +459,12 @@ def evaluate(
     return valid_aux
 
 
-def main():
+def main() -> list[list[jax.Array]] | dict[str, dict[str, Any]]:
+    """Parses the command-line options and runs :func:`evaluate` with them.
+
+    Returns:
+        list | dict: The return value of :func:`evaluate`.
+    """
     parser = argparse.ArgumentParser()
     parser.add_argument("--RUN_ID", type=int)
     parser.add_argument("--load_ckpt", type=str)

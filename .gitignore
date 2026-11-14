@@ -1,2 +1,7 @@
 __pycache__/
 .ipynb_checkpoints/
+
+# Documentation build output
+documentation/build/
+documentation/source/_autosummary/
+documentation/jupyter_execute/

@@ -1,0 +1,4 @@
+# Read the Docs: the CPU build of PyTorch, installed before ../requirements-cpu.txt so that its `torch==2.12.0` is
+# already satisfied (2.12.0+cpu). The PyPI wheel would pull the CUDA libraries on Linux.
+--index-url https://download.pytorch.org/whl/cpu
+torch==2.12.0

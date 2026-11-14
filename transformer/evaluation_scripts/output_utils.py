@@ -1,3 +1,5 @@
+"""Console output, LaTeX table and plotting helpers for the evaluation of generated flux vacua."""
+
 import numpy as np
 import seaborn as sns
 import matplotlib.pyplot as plt
@@ -5,15 +7,19 @@ import pandas as pd
 from math import ceil
 from pathlib import Path
 from matplotlib.collections import LineCollection
+from typing import Any
 
 
-def print_console_output(out, aux=None, verbose=False):
+def print_console_output(
+    out: dict[str, Any], aux: int | np.integer | None = None, verbose: bool = False
+) -> None:
     r"""Prints details about solving iteration.
 
     Args:
-        out (dict): Dictionary containing run data.
+        out (dict): Dictionary containing run data, as filled by ``validate_vacua``.
         verbose (bool): Controls print details. Defaults to False.
-        aux (str): Auxiliary prompt (i.e. nflux, w0 or gs_inv).
+        aux (int | None): Value of the auxiliary prompt (N_flux, or the discretised w0 or
+            gs_inv), printed instead of the geometry. Defaults to None.
     """
     print("------------------------")
     if aux is None:
@@ -35,13 +41,23 @@ def print_console_output(out, aux=None, verbose=False):
         print(f"In training data: {out['num_in_train_data']}")
 
 
-def write_latex_table(RUN_ID, all_hodge_pairs, log_dict_all_pairs, num_samples):
+def write_latex_table(
+    RUN_ID: int,
+    all_hodge_pairs: Any,
+    log_dict_all_pairs: dict[str, Any],
+    num_samples: int,
+) -> None:
     r"""Writes table in latex summarizing evaluation. Saves file as 'latex_table_{RUN_ID}.txt'.
+
+    The file is written to the current working directory.
 
     Args:
         RUN_ID (int): Indicating evaluated model.
-        all_hodge_pairs (list): All hodge pairs that were used in the prompts.
-        log_dict_all_pairs (dict): Dictionary containing evaluation metrics for each prompt.
+        all_hodge_pairs (list): All hodge pairs that were used in the prompts, grouped by
+            h12: ``all_hodge_pairs[k][i]`` is ``(h12, h11)``.
+        log_dict_all_pairs (dict): Dictionary containing evaluation metrics for each prompt,
+            keyed by ``"h12 h11"``. Each entry holds ``"total valid"`` and, for every
+            geometry with the same h12, a dictionary with ``"valid"`` and ``"in_train"``.
         num_samples (int): Number of samples per prompt.
     """
     with open(f"latex_table_{RUN_ID}.txt", "w") as f:
@@ -100,9 +116,37 @@ def write_latex_table(RUN_ID, all_hodge_pairs, log_dict_all_pairs, num_samples):
 
 
 def plot_hist(
-    all_hodge_pairs, prompts, aux_prompts, valid_dict, x, filename, discr=None
-):
-    
+    all_hodge_pairs: Any,
+    prompts: Any,
+    aux_prompts: Any,
+    valid_dict: dict[str, dict[str, Any]],
+    x: str,
+    filename: str,
+    discr: float | None = None,
+) -> None:
+    r"""Plots histograms of the sampled values of an auxiliary prompt, one panel per geometry.
+
+    The figure has one row per entry of ``all_hodge_pairs`` and five columns, one per
+    geometry. Each panel overlays, for every auxiliary prompt value, the distribution of
+    ``valid_dict[key]["dist"]`` (as probabilities, coloured by prompt value) and a dashed
+    vertical line at the prompt value minus 0.05. The figure is saved to ``filename`` at
+    300 dpi. LaTeX text rendering (``text.usetex``) is switched on.
+
+    Args:
+        all_hodge_pairs (list): Hodge pairs used in the prompts, one row per h12 value with
+            five geometries each.
+        prompts (np.ndarray([num_prompts, 3])): Untokenised prompts (h12, h11, auxiliary
+            prompt value), ordered by geometry and then by auxiliary prompt.
+        aux_prompts (list or np.ndarray): Auxiliary prompt values; only their number is used.
+        valid_dict (dict): Results keyed by ``"h12 h11 aux"``, each with the sampled values
+            under ``"dist"``, as returned by ``evaluate``.
+        x (str): Axis label of the sampled quantity.
+        filename (str): Output file name.
+        discr (float | None): Discretisation factor; prompt values are divided by it.
+            Defaults to None for prompts that were not discretised (N_flux), which also
+            selects discrete bins of width 1 instead of bins of width 0.1.
+    """
+
     sns.set_theme(rc={"text.usetex": True})
     fig, ax = plt.subplots(
         len(all_hodge_pairs), 5, figsize=(len(all_hodge_pairs) * 5, 16)
@@ -175,13 +219,27 @@ def plot_hist(
 
 
 def plot_cont(
-    all_hodge_pairs, prompts, aux_prompts, valid_dict, x, filename, discr=None):
+    all_hodge_pairs: Any,
+    prompts: Any,
+    aux_prompts: int | list[int],
+    valid_dict: dict[str, dict[str, Any]],
+    x: str,
+    filename: str,
+    discr: float | None = None,
+) -> None:
     r"""Plot prompted versus sampled counts as a heatmap, alongside validity.
-    
+
+    One figure is made per geometry and saved as ``f"{filename}_{h12}_{h11}.png"``. The
+    left panel is a two-dimensional histogram of the sampled against the prompted value,
+    with the diagonal as a dashed line; the right panel shows
+    ``valid_dict[key]["validity"] / 1000`` against the prompted value.
+
     Args:
         all_hodge_pairs (list): All hodge pairs that were used in the prompts. Shape is (#h12, #h11).
-        prompts (list): List of tokenized prompts. 
-        aux_prompts (np.ndarray): Array of additional prompts, e.g. $|W_0|$.
+        prompts (list): Untokenised prompts (h12, h11, auxiliary prompt value), ordered by
+            geometry and then by auxiliary prompt.
+        aux_prompts (int or list[int]): Number of auxiliary prompts per geometry: one number
+            for all geometries (int) or one entry per geometry (list).
         valid_dict (dict): Dictionary containing distributions of the additional prompts together with validities.
         x (str): Name of axis. Depends on which additional prompt was chosen.
         filename (str): File name to be used for the figures.
@@ -291,13 +349,34 @@ def plot_cont(
 
 
 def plot_cont_dual(
-    all_hodge_pairs, prompts, aux_prompts, valid_dict_pre, valid_dict_grpo, x, filename, discr=None):
+    all_hodge_pairs: Any,
+    prompts: Any,
+    aux_prompts: int | list[int],
+    valid_dict_pre: dict[str, dict[str, Any]],
+    valid_dict_grpo: dict[str, dict[str, Any]],
+    x: str,
+    filename: str,
+    discr: float | None = None,
+) -> None:
     r"""Plot prompted versus sampled counts as a heatmap, alongside validity.
-    
+
+    Compares the pre-trained and the GRPO model. One figure is made per entry (h12 value)
+    of ``all_hodge_pairs`` and saved as ``f"{filename}_all_h12_{h12}.png"``. It has a
+    2 x 3 grid of panels; row ``h11_i`` shows, for the ``h11_i``-th geometry, the
+    two-dimensional histograms of sampled against prompted values for the pre-trained and
+    the GRPO model, and the validities (``"validity"`` of both models and
+    ``"validity_non_unique"`` of the GRPO model, divided by 1000; 0 for prompts missing
+    from a dictionary). ``prompts`` is indexed
+    assuming five geometries per h12 (geometry index ``5 * h12_index + h11_index``), while
+    the grid has two rows, so at most two geometries per h12 can be plotted. If ``x`` is
+    ``"$g_s$"``, sampled and prompted values are inverted before plotting.
+
     Args:
         all_hodge_pairs (list): All hodge pairs that were used in the prompts. Shape is (#h12, #h11).
-        prompts (list): List of tokenized prompts. 
-        aux_prompts (np.ndarray): Array of additional prompts, e.g. $|W_0|$.
+        prompts (list): Untokenised prompts (h12, h11, auxiliary prompt value), ordered by
+            geometry and then by auxiliary prompt.
+        aux_prompts (int or list[int]): Number of auxiliary prompts per geometry: one number
+            for all geometries (int) or one entry per geometry (list).
         valid_dict_pre (dict): Dictionary containing distributions of the additional prompts together with validities for the pre-trained model.
         valid_dict_grpo (dict): Dictionary containing distributions of the additional prompts together with validities for the GRPO model.
         x (str): Name of axis. Depends on which additional prompt was chosen.
@@ -531,43 +610,40 @@ def plot_cont_dual(
 
 
 def plot_imaginary_moduli_correlation_matrix(
-    npz_path,
-    h11,
-    sample_fraction=0.40,
-    random_seed=42,
-    solution="raw",
-    padding=0.08,
-    save_path=None,
-    dpi=300,
-):
-    """
-    Plot a lower-triangular matrix of all pairwise Im(z_i)-Im(z_j)
-    initializer-to-solution displacements.
+    npz_path: str | Path,
+    h11: int,
+    sample_fraction: float = 0.40,
+    random_seed: int = 42,
+    solution: str = "raw",
+    padding: float = 0.08,
+    save_path: str | Path | None = None,
+    dpi: int = 300,
+) -> None:
+    r"""Plot a lower-triangular matrix of all pairwise Im(z_i)-Im(z_j) initializer-to-solution displacements.
 
-    The diagonal marginal distributions are omitted. Only solver-valid
-    samples are considered.
+    The diagonal marginal distributions are omitted. Only finite, solver-valid samples are
+    considered. Each panel shows, for a random subset of them, the initial guess, the
+    solution and a line joining the two. A relative ``npz_path`` that is not found is
+    searched for in the current working directory and its parents.
 
-    Parameters
-    ----------
-    npz_path : str or Path
-        Evaluation NPZ containing z0, solver outputs, and solver_is_valid.
-    sample_fraction : float, default=0.40
-        Fraction of valid samples to display.
-    random_seed : int, default=42
-        Random seed used to select the displayed subset.
-    solution : {"raw", "canonical"}, default="raw"
-        "raw" uses solver_raw_z, the direct SciPy root.
-        "canonical" uses solver_z, the symmetry-mapped solution.
-    padding : float, default=0.08
-        Fractional padding added to each modulus range.
-    save_path : str or Path, optional
-        Figure output path. SVG or PDF gives the sharpest result.
-    dpi : int, default=300
-        Resolution when saving a raster image.
+    Args:
+        npz_path (str or Path): Evaluation NPZ containing z0, solver outputs, and solver_is_valid.
+        h11 (int): h11 of the geometry; used only in the figure title.
+        sample_fraction (float): Fraction of valid samples to display. Defaults to 0.40.
+        random_seed (int): Random seed used to select the displayed subset. Defaults to 42.
+        solution (str): "raw" uses solver_raw_z, the direct SciPy root; "canonical" uses
+            solver_z, the symmetry-mapped solution. Defaults to "raw".
+        padding (float): Fractional padding added to each modulus range. Defaults to 0.08.
+        save_path (str or Path): Figure output path. SVG or PDF gives the sharpest result.
+            Defaults to None, in which case the figure is not saved.
+        dpi (int): Resolution when saving a raster image. Defaults to 300.
 
-    Returns
-    -------
-    fig, axes, selected_indices
+    Raises:
+        FileNotFoundError: If ``npz_path`` cannot be found.
+        KeyError: If the NPZ file lacks z0, the selected solution array or solver_is_valid.
+        ValueError: If ``sample_fraction`` is not in (0, 1], ``solution`` is neither "raw"
+            nor "canonical", the arrays have inconsistent shapes, h12 < 2, or there are no
+            finite solver-valid samples.
     """
     npz_path = Path(npz_path)
 

@@ -24,6 +24,11 @@ class ObservableConditioningContext:
 
     @property
     def is_joint(self) -> bool:
+        """bool: Whether ``target`` and ``active`` are mappings (joint conditioning).
+
+        Raises:
+            ValueError: If exactly one of ``target`` and ``active`` is a mapping.
+        """
         target_is_mapping = isinstance(self.target, Mapping)
         active_is_mapping = isinstance(self.active, Mapping)
         if target_is_mapping != active_is_mapping:
@@ -34,7 +39,18 @@ class ObservableConditioningContext:
         return target_is_mapping
 
     def select(self, observable: str) -> "ObservableConditioningContext":
-        """Return the single-observable view used by one token encoder."""
+        """Return the single-observable view used by one token encoder.
+
+        Args:
+            observable (str): Canonical observable name.
+
+        Returns:
+            ObservableConditioningContext: ``self`` if the context is not joint,
+                otherwise a tensor-valued context for ``observable``.
+
+        Raises:
+            ValueError: If a joint context lacks ``observable``.
+        """
 
         if not self.is_joint:
             return self
@@ -52,6 +68,11 @@ class ObservableConditioningContext:
         )
 
     def any_active(self) -> bool:
+        """Return whether any row is active for any observable.
+
+        Returns:
+            bool: ``True`` if at least one ``active`` entry is set.
+        """
         if not self.is_joint:
             return bool(torch.as_tensor(self.active).bool().any())
         active = self.active
@@ -59,9 +80,9 @@ class ObservableConditioningContext:
         return any(bool(torch.as_tensor(value).bool().any()) for value in active.values())
 
 
-SUPPORTED_CONDITIONAL_OBSERVABLES = ("N_flux", "g_s", "W0_abs")
+SUPPORTED_CONDITIONAL_OBSERVABLES: tuple[str, ...] = ("N_flux", "g_s", "W0_abs")
 
-_OBSERVABLE_ALIASES = {
+_OBSERVABLE_ALIASES: dict[str, str] = {
     "n_flux": "N_flux",
     "nflux": "N_flux",
     "g_s": "g_s",
@@ -73,7 +94,20 @@ _OBSERVABLE_ALIASES = {
 
 
 def canonical_observable_name(observable: str) -> str:
-    """Normalize config-friendly observable spellings to dataset field names."""
+    """Normalise config-friendly observable spellings to dataset field names.
+
+    Args:
+        observable (str): Observable name. Canonical names are accepted as
+            given; otherwise the stripped, lower-cased name is looked up among
+            the aliases ``n_flux``, ``nflux``, ``g_s``, ``gs``, ``w0_abs``,
+            ``|w_0|`` and ``|w0|``.
+
+    Returns:
+        str: One of :data:`SUPPORTED_CONDITIONAL_OBSERVABLES`.
+
+    Raises:
+        ValueError: If the name is not supported.
+    """
 
     value = str(observable).strip()
     if value in SUPPORTED_CONDITIONAL_OBSERVABLES:
@@ -88,6 +122,21 @@ def canonical_observable_name(observable: str) -> str:
 
 
 def observable_transform_name(observable: str) -> str:
+    """Return the name of the target transform used for an observable.
+
+    :class:`ObservableTokenConditioner` applies ``identity`` as ``x``, ``log``
+    as ``log(x)`` and ``log1p_delta`` as ``log(x + transform_delta)``.
+
+    Args:
+        observable (str): Observable name or alias.
+
+    Returns:
+        str: ``"identity"`` for ``N_flux``, ``"log"`` for ``g_s`` and
+            ``"log1p_delta"`` for ``W0_abs``.
+
+    Raises:
+        ValueError: If the observable is not supported.
+    """
     observable = canonical_observable_name(observable)
     if observable == "N_flux":
         return "identity"
@@ -113,6 +162,24 @@ class ObservableTokenConditioner(nn.Module):
         observable: str = "N_flux",
         transform_delta: float = 1.0e-8,
     ) -> None:
+        """Build the encoder and the per-geometry standardisation buffers.
+
+        The buffers ``observable_mean`` and ``observable_std``, of shape
+        ``(num_geometries,)``, start at 0 and 1 and are persistent, so a
+        checkpoint's state dictionary supplies their values.
+
+        Args:
+            model_dim (int): Output token width.
+            hidden_width (int): Hidden width of the encoder MLP.
+            num_geometries (int): Number of geometry IDs with statistics.
+            observable (str): Observable name or alias. Defaults to ``"N_flux"``.
+            transform_delta (float): Offset ``delta`` of the ``W0_abs``
+                transform ``log(x + delta)``. Defaults to ``1e-8``.
+
+        Raises:
+            ValueError: If a dimension is not positive or the observable is
+                not supported.
+        """
         super().__init__()
         if min(model_dim, hidden_width, num_geometries) <= 0:
             raise ValueError("Observable-token conditioning dimensions must be positive")
@@ -143,6 +210,28 @@ class ObservableTokenConditioner(nn.Module):
     def forward(
         self, context: ObservableConditioningContext
     ) -> torch.Tensor:
+        """Encode each row's target as one token.
+
+        With ``T`` the transform named by :func:`observable_transform_name`,
+        the target ``x`` is standardised with the row geometry's mean and
+        standard deviation, ``s = (T(x) - mean) / std``; the encoder input
+        is ``[s, sin(pi s), cos(pi s), sin(2 pi s), cos(2 pi s), 0, 0, 0]``.
+        Inactive rows give a zero token.
+
+        Args:
+            context (ObservableConditioningContext): Targets, geometry IDs and
+                activity flags, one value per row; joint contexts are reduced
+                to this conditioner's observable.
+
+        Returns:
+            torch.Tensor: Tokens of shape ``(batch, model_dim)``.
+
+        Raises:
+            ValueError: If the context tensors disagree in length, a geometry
+                ID is out of range, an active target is not finite, an active
+                ``g_s`` target is not positive, an active ``W0_abs`` target is
+                negative, or the context is invalid.
+        """
         context = context.select(self.observable)
         target = torch.as_tensor(
             context.target, device=self.observable_mean.device
@@ -211,6 +300,22 @@ class MultiObservableTokenConditioner(nn.Module):
         observables: tuple[str, ...],
         transform_delta: float = 1.0e-8,
     ) -> None:
+        """Build one :class:`ObservableTokenConditioner` per observable.
+
+        Args:
+            model_dim (int): Output token width.
+            hidden_width (int): Hidden width of each encoder MLP.
+            num_geometries (int): Number of geometry IDs with statistics.
+            observables (tuple[str, ...]): Observable names or aliases, in
+                token order.
+            transform_delta (float): Offset of the ``W0_abs`` transform.
+                Defaults to ``1e-8``.
+
+        Raises:
+            ValueError: If fewer than two observables are given, they are not
+                unique after canonicalisation, or a per-observable conditioner
+                rejects its arguments.
+        """
         super().__init__()
         self.observables = tuple(
             canonical_observable_name(observable) for observable in observables
@@ -237,6 +342,24 @@ class MultiObservableTokenConditioner(nn.Module):
     def forward(
         self, context: ObservableConditioningContext
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Encode every configured observable as a separate token.
+
+        A tensor-valued (non-joint) context targets the first observable; the
+        remaining tokens are inactive.
+
+        Args:
+            context (ObservableConditioningContext): Joint or single-observable
+                context.
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: Tokens of shape
+                ``(batch, num_observables, model_dim)`` and the boolean activity
+                mask of shape ``(batch, num_observables)``.
+
+        Raises:
+            ValueError: If the context is invalid or a per-observable encoder
+                rejects it.
+        """
         tokens: list[torch.Tensor] = []
         active_masks: list[torch.Tensor] = []
         if context.is_joint:

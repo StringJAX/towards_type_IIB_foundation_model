@@ -1,3 +1,12 @@
+"""Flax transformer modules: attention, feed-forward, blocks and full models.
+
+Defines decoder-only and encoder-decoder models. The encoder-decoder supports
+cached autoregressive decoding with explicit self- and cross-attention key/value
+caches, used by :func:`jax_transformer.utils.sample`.
+"""
+
+from typing import Any
+
 import jax  # lax.dynamic_update_slice writes one token into the inference cache.
 import jax.numpy as jnp
 from flax import linen as nn
@@ -16,11 +25,11 @@ class MultiheadAttention(nn.Module):
 
     @nn.compact
     def __call__(
-        self, x, training: bool, encoder_output=None, mask=None,
+        self, x: jax.Array | None, training: bool, encoder_output: jax.Array | None = None, mask: jax.Array | None = None,
         # Keyword-only inference options; defaults preserve full-forward calls.
         # self_kv is writable loop state; cross_kv contains fixed encoder K/V.
-        *, self_kv=None, cross_kv=None, decode_position=None, prepare_cross=False,
-    ):
+        *, self_kv: tuple[jax.Array, jax.Array] | None = None, cross_kv: tuple[jax.Array, jax.Array] | None = None, decode_position: int | jax.Array | None = None, prepare_cross: bool = False,
+    ) -> jax.Array | tuple[Any, ...]:
         r"""Computes multi-head attention: MultiHead(Q,K,V) = Concat(head_1,...,head_n)W^O
 
         Args:
@@ -45,9 +54,9 @@ class MultiheadAttention(nn.Module):
                 return immediately; x, mask, and supplied caches are unused.
 
         Returns:
-            Normally, projected activations [batch_size, seq_length, embed_dim].
-            With self_kv, returns (activations, updated (K, V)).
-            With prepare_cross, returns only the projected encoder (K, V).
+            jax.Array | tuple[Any, ...]: Normally, projected activations [batch_size, seq_length, embed_dim].
+                With self_kv, returns (activations, updated (K, V)).
+                With prepare_cross, returns only the projected encoder (K, V).
 
         Raises:
             AssertionError: If embed_dim not divisible by num_heads.
@@ -179,7 +188,7 @@ class FeedForward(nn.Module):
     dropout: float
 
     @nn.compact
-    def __call__(self, x, training: bool):
+    def __call__(self, x: jax.Array, training: bool) -> jax.Array:
         r"""Computes forward call: FFN(x)=max(0,xW_1+b_1)W_2+b_2
 
         Args:
@@ -213,7 +222,7 @@ class DecoderBlock(nn.Module):
     Attributes:
         embed_dim (int): Embedding dimension.
         num_heads (int): Number of attention heads.
-        dropout (float): Propability of dropout.
+        dropout (float): Probability of dropout.
     """
 
     embed_dim: int
@@ -222,9 +231,9 @@ class DecoderBlock(nn.Module):
 
     @nn.compact
     def __call__(
-        self, x, training: bool, encoder_output=None, mask_self=None, mask_cross=None,
-        *, self_kv=None, cross_kv=None, decode_position=None, prepare_cross=False,
-    ):
+        self, x: jax.Array | None, training: bool, encoder_output: jax.Array | None = None, mask_self: jax.Array | None = None, mask_cross: jax.Array | None = None,
+        *, self_kv: tuple[jax.Array, jax.Array] | None = None, cross_kv: tuple[jax.Array, jax.Array] | None = None, decode_position: int | jax.Array | None = None, prepare_cross: bool = False,
+    ) -> jax.Array | tuple[Any, ...]:
         r"""Performs all computations contained in a single decoder block.
 
         Args:
@@ -251,9 +260,12 @@ class DecoderBlock(nn.Module):
                 requires encoder_output and skips the decoder computations.
 
         Returns:
-            Normally, decoder activations [batch_size, seq_len, embed_dim].
-            With self_kv, returns (activations, updated self_kv).
-            With prepare_cross, returns only the projected encoder (K, V).
+            jax.Array | tuple[Any, ...]: Normally, decoder activations [batch_size, seq_len, embed_dim].
+                With self_kv, returns (activations, updated self_kv).
+                With prepare_cross, returns only the projected encoder (K, V).
+
+        Raises:
+            AssertionError: If encoder_output is given without mask_cross and cross_kv is None.
         """
         if prepare_cross:
             # Visit only this block's named cross-attention projection. None
@@ -309,7 +321,7 @@ class EncoderBlock(nn.Module):
     dropout: float
 
     @nn.compact
-    def __call__(self, x, training: bool, mask=None):
+    def __call__(self, x: jax.Array, training: bool, mask: jax.Array | None = None) -> jax.Array:
         r"""Performs all computations contained in a single encoder block.
 
         Args:
@@ -350,12 +362,13 @@ class DecoderModel(nn.Module):
     dropout: float
 
     @nn.compact
-    def __call__(self, input_ids, mask=None, training=False):
+    def __call__(self, input_ids: jax.Array, mask: jax.Array | None = None, training: bool = False) -> jax.Array:
         r"""Performs forward-pass of the model.
 
         Args:
             input_ids (jnp.ndarray([batch_size, seq_len])): Batched input of token IDs.
-            mask (jax.Array or None): Decoder attention/padding mask; zero entries indicate masked positions.
+            mask (jax.Array): Padding mask [batch_size, seq_len]; zero entries indicate masked positions.
+                Despite the default None, it is indexed unconditionally, so None fails.
             training (bool): Controls whether dropout is applied.
 
         Returns:
@@ -404,10 +417,10 @@ class EncoderDecoderModel(nn.Module):
 
     @nn.compact
     def __call__(
-        self, input_ids=None, output_ids=None, mask_enc=None, mask_dec=None,
-        training=False, *, prepare_cross=False, self_kv=None, cross_kv=None,
-        decode_position=None,
-    ):
+        self, input_ids: jax.Array | None = None, output_ids: jax.Array | None = None, mask_enc: jax.Array | None = None, mask_dec: jax.Array | None = None,
+        training: bool = False, *, prepare_cross: bool = False, self_kv: tuple[tuple[jax.Array, jax.Array], ...] | None = None, cross_kv: tuple[tuple[jax.Array, jax.Array], ...] | None = None,
+        decode_position: int | jax.Array | None = None,
+    ) -> jax.Array | tuple[Any, ...]:
         r"""Performs forward-pass of the model.
 
         Args:
@@ -436,9 +449,16 @@ class EncoderDecoderModel(nn.Module):
                 token in cached inference. Requires self_kv and cross_kv.
 
         Returns:
-            Full forward: logits [batch_size, seq_len_out, vocab_size].
-            prepare_cross: a tuple of per-layer projected (K, V).
-            Cached decode: (logits [batch_size, vocab_size], updated self_kv).
+            jax.Array | tuple[Any, ...]: Full forward: logits [batch_size, seq_len_out, vocab_size].
+                With prepare_cross, a tuple of per-layer projected (K, V).
+                Cached decode: (logits [batch_size, vocab_size], updated self_kv).
+
+        Raises:
+            ValueError: In cached decoding, if training is True, output_ids has more
+                than one token per row, a cache is missing, or the number of caches
+                differs from num_layers; with prepare_cross, if training is True.
+            AssertionError: If the batch sizes of the full-forward inputs differ, or
+                input or output IDs exceed max_len_in or max_len_out.
         """
         # Cached inference uses the same named modules/parameters as training.
         # The cache is explicit loop state, never a checkpoint collection.

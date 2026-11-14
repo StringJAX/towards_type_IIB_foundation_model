@@ -25,7 +25,24 @@ def classifier_free_guidance_logits(
     unconditional_logits: torch.Tensor,
     guidance_scale: float,
 ) -> torch.Tensor:
-    """Combine conditional and null-path logits using the standard CFG rule."""
+    """Combine conditional and null-path logits using the standard CFG rule.
+
+    Returns ``unconditional + guidance_scale * (conditional - unconditional)``.
+
+    Args:
+        conditional_logits (torch.Tensor): Logits with the observable token.
+        unconditional_logits (torch.Tensor): Logits on the null path, of the
+            same shape.
+        guidance_scale (float): Guidance weight; 1 recovers the conditional
+            logits and 0 the unconditional ones.
+
+    Returns:
+        torch.Tensor: Guided logits of the input shape.
+
+    Raises:
+        ValueError: If ``guidance_scale`` is negative or not finite, or the two
+            logit tensors differ in shape.
+    """
 
     scale = float(guidance_scale)
     if not math.isfinite(scale) or scale < 0.0:
@@ -38,7 +55,11 @@ def classifier_free_guidance_logits(
 
 
 class StructuredFluxSampler:
-    """Sequential masked sampling with seeded random-coordinate ordering."""
+    """Sequential masked sampling with seeded random-coordinate ordering.
+
+    Each sampling step reveals one coordinate per row, following a random
+    permutation drawn per row from the seeded generator.
+    """
 
     def __init__(
         self,
@@ -53,6 +74,37 @@ class StructuredFluxSampler:
         guidance_scale: float = 1.0,
         device: str | torch.device | None = None,
     ) -> None:
+        """Configure the sampler and check it against the model.
+
+        Args:
+            model (torch.nn.Module): Denoiser exposing ``flux_hidden``,
+                ``flux_head``, ``predict_initializer``, ``config`` and
+                ``observable_conditioner``, such as
+                :class:`FluxVacuumTransformer`.
+            tokenizer_metadata (dict[str, Any]): Output of
+                :meth:`DirectIntegerTokenizer.to_metadata`.
+            geometry_metadata (dict[str, Any]): Dictionary whose
+                ``geometries`` list holds rows with ``geometry_id``, ``h11``
+                and ``h12``.
+            num_timesteps (int | None): Number of discrete timesteps; must be
+                ``None`` unless time conditioning is discrete. Defaults to 200.
+            mask_schedule (str): Mask schedule; must be ``linear`` unless time
+                conditioning is discrete. Defaults to ``"sine"``.
+            time_conditioning (str): Time-conditioning mode; must match
+                ``model.config.time_conditioning`` (``discrete`` if absent).
+                Defaults to ``"discrete"``.
+            temperature (float): Softmax temperature; must be positive.
+                Defaults to 1.0.
+            guidance_scale (float): Classifier-free guidance weight; must be
+                finite and non-negative. Defaults to 1.0.
+            device (str | torch.device | None): Sampling device. Defaults to
+                the device of the model's first parameter.
+
+        Raises:
+            ValueError: If an argument is out of range, the time-conditioning
+                settings are inconsistent with each other or with the model,
+                or the tokenizer metadata is inconsistent.
+        """
         if float(temperature) <= 0.0:
             raise ValueError("temperature must be positive")
         if not math.isfinite(float(guidance_scale)) or float(guidance_scale) < 0.0:
@@ -103,7 +155,29 @@ class StructuredFluxSampler:
         observable_context: ObservableConditioningContext | None = None,
         time_condition: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """Return the deployed categorical policy at every flux coordinate."""
+        """Return the deployed categorical policy at every flux coordinate.
+
+        When ``observable_context`` is given and ``guidance_scale != 1``, the
+        conditional logits are combined with a second pass without the
+        context by :func:`classifier_free_guidance_logits`. Logits are divided
+        by the temperature before the log-softmax.
+
+        Args:
+            tokens (torch.Tensor): Token IDs of shape ``(batch, max_flux_dim)``.
+            active_mask (torch.Tensor): Boolean mask of the same shape.
+            h11 (torch.Tensor): ``h11`` per row, shape ``(batch,)``.
+            h12 (torch.Tensor): ``h12`` per row, shape ``(batch,)``.
+            observable_context (ObservableConditioningContext | None):
+                Observable targets, or ``None`` for unconditional sampling.
+                Defaults to ``None``.
+            time_condition (torch.Tensor | None): Denoiser time input; if
+                ``None`` it is computed from the current masked fraction.
+                Defaults to ``None``.
+
+        Returns:
+            torch.Tensor: Log-probabilities over value tokens, of shape
+                ``(batch, max_flux_dim, output_vocab_size)``.
+        """
 
         if time_condition is None:
             masked_count = (
@@ -153,6 +227,21 @@ class StructuredFluxSampler:
         *,
         observable_context: ObservableConditioningContext | None = None,
     ) -> torch.Tensor:
+        """Sample one value token per row at the given coordinate.
+
+        Args:
+            tokens (torch.Tensor): Token IDs of shape ``(batch, max_flux_dim)``.
+            active_mask (torch.Tensor): Boolean mask of the same shape.
+            h11 (torch.Tensor): ``h11`` per row, shape ``(batch,)``.
+            h12 (torch.Tensor): ``h12`` per row, shape ``(batch,)``.
+            position (torch.Tensor): Coordinate index per row, shape ``(batch,)``.
+            generator (torch.Generator): Seeded random generator.
+            observable_context (ObservableConditioningContext | None):
+                Observable targets, or ``None``. Defaults to ``None``.
+
+        Returns:
+            torch.Tensor: Sampled value-token IDs, shape ``(batch,)``.
+        """
         log_probabilities = self._action_log_probabilities(
             tokens,
             active_mask,
@@ -172,6 +261,19 @@ class StructuredFluxSampler:
         batch_size: int,
         generator: torch.Generator,
     ) -> torch.Tensor | None:
+        """Return the reveal order of the coordinates for each row.
+
+        Subclasses that choose positions during sampling return ``None``.
+
+        Args:
+            flux_dim (int): Number of active coordinates per row.
+            batch_size (int): Number of rows.
+            generator (torch.Generator): Seeded random generator.
+
+        Returns:
+            torch.Tensor | None: Independent random permutations of
+                ``range(flux_dim)``, shape ``(batch_size, flux_dim)``.
+        """
         return torch.stack(
             [
                 torch.randperm(
@@ -194,6 +296,26 @@ class StructuredFluxSampler:
         *,
         observable_context: ObservableConditioningContext | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Sample the value at the coordinate prescribed by the reveal order.
+
+        Args:
+            tokens (torch.Tensor): Token IDs of shape ``(batch, max_flux_dim)``.
+            active_mask (torch.Tensor): Boolean mask of the same shape.
+            h11 (torch.Tensor): ``h11`` per row, shape ``(batch,)``.
+            h12 (torch.Tensor): ``h12`` per row, shape ``(batch,)``.
+            position (torch.Tensor | None): Coordinate index per row, shape
+                ``(batch,)``.
+            generator (torch.Generator): Seeded random generator.
+            observable_context (ObservableConditioningContext | None):
+                Observable targets, or ``None``. Defaults to ``None``.
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: The filled coordinate and the
+                sampled value-token ID per row, each of shape ``(batch,)``.
+
+        Raises:
+            RuntimeError: If ``position`` is ``None``.
+        """
         if position is None:
             raise RuntimeError("Random-coordinate sampling requires a coordinate order")
         action = self._sample_action(
@@ -219,7 +341,23 @@ class StructuredFluxSampler:
         observable_context: ObservableConditioningContext | None,
         progress: Callable[[int, int], None] | None,
     ) -> None:
-        """Fill active masks according to this sampler's reveal policy."""
+        """Fill active masks according to this sampler's reveal policy.
+
+        Runs ``flux_dim`` steps, each filling one coordinate per row in place.
+
+        Args:
+            tokens (torch.Tensor): Token IDs of shape ``(batch, max_flux_dim)``,
+                modified in place.
+            active_mask (torch.Tensor): Boolean mask of the same shape.
+            h11 (torch.Tensor): ``h11`` per row, shape ``(batch,)``.
+            h12 (torch.Tensor): ``h12`` per row, shape ``(batch,)``.
+            flux_dim (int): Number of active coordinates per row.
+            generator (torch.Generator): Seeded random generator.
+            observable_context (ObservableConditioningContext | None):
+                Observable targets, or ``None``.
+            progress (Callable[[int, int], None] | None): Optional callback
+                receiving ``(completed_steps, flux_dim)`` after each step.
+        """
 
         batch_size = int(tokens.shape[0])
         order = self._coordinate_order(
@@ -256,6 +394,42 @@ class StructuredFluxSampler:
         observable_target: float | torch.Tensor | None = None,
         observable_targets: Mapping[str, float | torch.Tensor] | None = None,
     ) -> dict[str, Any]:
+        """Sample a batch of complete flux vectors for one geometry.
+
+        Gradients are disabled. Every active coordinate starts as ``MASK`` and
+        is filled by :meth:`_fill_tokens`.
+
+        Args:
+            geometry_id (int): Key into the ``geometry_metadata`` rows.
+            batch_size (int): Number of samples; must be positive.
+            seed (int): Seed of the ``torch.Generator`` on the sampling device.
+            predict_initializer (bool): Whether to add the model's moduli
+                initializer prediction. Defaults to ``True``.
+            progress (Callable[[int, int], None] | None): Optional callback
+                receiving ``(completed, total)``. Defaults to ``None``.
+            observable_target (float | torch.Tensor | None): Target for the
+                first configured observable, scalar or of shape
+                ``(batch_size,)``. Defaults to ``None``.
+            observable_targets (Mapping[str, float | torch.Tensor] | None):
+                Targets keyed by observable name (aliases accepted); configured
+                observables without a target are inactive. Defaults to ``None``.
+
+        Returns:
+            dict[str, Any]: ``tokens`` (``long``) and ``active_mask`` (bool),
+                each of shape ``(batch_size, max_flux_dim)``; ``flux`` (``int64``),
+                of shape ``(batch_size, 4 * (h12 + 1))``; and, if
+                ``predict_initializer``, ``initializer``, the dictionary returned
+                by the model's ``predict_initializer``.
+
+        Raises:
+            ValueError: If ``batch_size`` is not positive; both target
+                arguments are given; a target is duplicated, names an
+                unconfigured observable, has the wrong shape or is not finite;
+                a ``g_s`` target is not positive or a ``W0_abs`` target is
+                negative; or targets are given to a model without an
+                observable conditioner.
+            RuntimeError: If masked active positions remain after filling.
+        """
         geometry = self.geometry_by_id[int(geometry_id)]
         h11_value = int(geometry["h11"])
         h12_value = int(geometry["h12"])
@@ -404,6 +578,16 @@ class ConfidenceOrderFluxSampler(StructuredFluxSampler):
         batch_size: int,
         generator: torch.Generator,
     ) -> None:
+        """Return ``None``: positions are chosen by confidence during sampling.
+
+        Args:
+            flux_dim (int): Unused.
+            batch_size (int): Unused.
+            generator (torch.Generator): Unused.
+
+        Returns:
+            None: No precomputed order.
+        """
         del flux_dim, batch_size, generator
         return None
 
@@ -418,6 +602,26 @@ class ConfidenceOrderFluxSampler(StructuredFluxSampler):
         *,
         observable_context: ObservableConditioningContext | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Fill, in each row, the masked coordinate with the most confident policy.
+
+        A coordinate's confidence is its largest log-probability over value
+        tokens; the value at the chosen coordinate is then sampled from the
+        policy.
+
+        Args:
+            tokens (torch.Tensor): Token IDs of shape ``(batch, max_flux_dim)``.
+            active_mask (torch.Tensor): Boolean mask of the same shape.
+            h11 (torch.Tensor): ``h11`` per row, shape ``(batch,)``.
+            h12 (torch.Tensor): ``h12`` per row, shape ``(batch,)``.
+            position (torch.Tensor | None): Ignored.
+            generator (torch.Generator): Seeded random generator.
+            observable_context (ObservableConditioningContext | None):
+                Observable targets, or ``None``. Defaults to ``None``.
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor]: The chosen coordinate and the
+                sampled value-token ID per row, each of shape ``(batch,)``.
+        """
         del position
         log_probabilities = self._action_log_probabilities(
             tokens,
@@ -459,6 +663,31 @@ class MaskGITFluxSampler(StructuredFluxSampler):
         guidance_scale: float = 1.0,
         device: str | torch.device | None = None,
     ) -> None:
+        """Configure the sampler; see :class:`StructuredFluxSampler`.
+
+        Args:
+            model (torch.nn.Module): Denoiser, as for
+                :class:`StructuredFluxSampler`.
+            tokenizer_metadata (dict[str, Any]): Tokenizer metadata.
+            geometry_metadata (dict[str, Any]): Geometry metadata.
+            steps (int): Number of MaskGIT decoding steps; must be a positive
+                integer. Defaults to 32.
+            num_timesteps (int | None): As for :class:`StructuredFluxSampler`.
+                Defaults to 200.
+            mask_schedule (str): As for :class:`StructuredFluxSampler`.
+                Defaults to ``"sine"``.
+            time_conditioning (str): As for :class:`StructuredFluxSampler`.
+                Defaults to ``"discrete"``.
+            temperature (float): Softmax temperature. Defaults to 1.0.
+            guidance_scale (float): Classifier-free guidance weight.
+                Defaults to 1.0.
+            device (str | torch.device | None): Sampling device. Defaults to
+                the device of the model's first parameter.
+
+        Raises:
+            ValueError: If ``steps`` is not a positive integer, or as for
+                :class:`StructuredFluxSampler`.
+        """
         if isinstance(steps, bool) or not isinstance(steps, int) or steps <= 0:
             raise ValueError("MaskGIT steps must be a positive integer")
         super().__init__(
@@ -486,6 +715,29 @@ class MaskGITFluxSampler(StructuredFluxSampler):
         observable_context: ObservableConditioningContext | None,
         progress: Callable[[int, int], None] | None,
     ) -> None:
+        """Fill masked coordinates in parallel over ``steps`` MaskGIT steps.
+
+        At step ``s`` a value is proposed for every coordinate, and its
+        log-probability is the confidence. With target masked count
+        ``floor(cos(pi * s / (2 * steps)) * flux_dim)`` (zero at the last step),
+        each row commits its ``min(m, max(1, m - target))`` most confident
+        masked proposals, where ``m`` is the row's masked count. The loop stops
+        early once no active coordinate is masked.
+
+        Args:
+            tokens (torch.Tensor): Token IDs of shape ``(batch, max_flux_dim)``,
+                modified in place.
+            active_mask (torch.Tensor): Boolean mask of the same shape.
+            h11 (torch.Tensor): ``h11`` per row, shape ``(batch,)``.
+            h12 (torch.Tensor): ``h12`` per row, shape ``(batch,)``.
+            flux_dim (int): Number of active coordinates per row.
+            generator (torch.Generator): Seeded random generator.
+            observable_context (ObservableConditioningContext | None):
+                Observable targets, or ``None``.
+            progress (Callable[[int, int], None] | None): Optional callback
+                receiving ``(flux_dim - max_remaining_masked, flux_dim)`` after
+                each step.
+        """
         batch_size = int(tokens.shape[0])
         for step in range(1, self.steps + 1):
             masked = (

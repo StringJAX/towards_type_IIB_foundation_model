@@ -1,0 +1,4 @@
+# GPU install (Linux with CUDA 13): sampling, as in the Colab sample notebooks. Python >= 3.12.
+#   pip install -r requirements-gpu.txt
+-r requirements-cpu.txt
+jax[cuda13]==0.12.0.1

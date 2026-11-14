@@ -10,7 +10,14 @@ import torch.nn.functional as F
 
 
 class TimestepMLP(nn.Module):
+    """Embed a discrete timestep sinusoidally, then apply a two-layer MLP."""
+
     def __init__(self, model_dim: int) -> None:
+        """Build the MLP.
+
+        Args:
+            model_dim (int): Embedding and output width.
+        """
         super().__init__()
         self.model_dim = int(model_dim)
         self.net = nn.Sequential(
@@ -20,6 +27,18 @@ class TimestepMLP(nn.Module):
         )
 
     def forward(self, timestep: torch.Tensor) -> torch.Tensor:
+        """Embed timesteps.
+
+        With ``half = model_dim // 2`` and frequencies
+        ``f_k = 10000 ** (-k / max(half, 1))`` for ``k < half``, the input to
+        the MLP is ``[cos(t f_k), sin(t f_k)]``, zero-padded to ``model_dim``.
+
+        Args:
+            timestep (torch.Tensor): Timesteps of shape ``(batch,)``.
+
+        Returns:
+            torch.Tensor: Embeddings of shape ``(batch, model_dim)``.
+        """
         half = self.model_dim // 2
         frequencies = torch.exp(
             -math.log(10_000.0)
@@ -37,6 +56,11 @@ class ContinuousTimeMLP(nn.Module):
     """Embed a scalar mask probability directly into the AdaLN condition."""
 
     def __init__(self, model_dim: int) -> None:
+        """Build the MLP.
+
+        Args:
+            model_dim (int): Output width.
+        """
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(1, int(model_dim)),
@@ -45,6 +69,18 @@ class ContinuousTimeMLP(nn.Module):
         )
 
     def forward(self, mask_probability: torch.Tensor) -> torch.Tensor:
+        """Embed mask probabilities.
+
+        Args:
+            mask_probability (torch.Tensor): Mask probabilities in ``[0, 1]``;
+                flattened to shape ``(N,)``.
+
+        Returns:
+            torch.Tensor: Embeddings of shape ``(N, model_dim)``.
+
+        Raises:
+            ValueError: If a value is not finite or lies outside ``[0, 1]``.
+        """
         value = torch.as_tensor(mask_probability).float().reshape(-1)
         if not bool(torch.isfinite(value).all()) or bool(
             ((value < 0.0) | (value > 1.0)).any()
@@ -57,6 +93,17 @@ class SelfAttention(nn.Module):
     """Masked self-attention without rotary or sinusoidal transforms."""
 
     def __init__(self, model_dim: int, num_heads: int, dropout: float) -> None:
+        """Build the projections.
+
+        Args:
+            model_dim (int): Model width.
+            num_heads (int): Number of attention heads.
+            dropout (float): Dropout probability on the attention weights,
+                applied in training mode only.
+
+        Raises:
+            ValueError: If ``model_dim`` is not divisible by ``num_heads``.
+        """
         super().__init__()
         if model_dim % num_heads:
             raise ValueError("model_dim must be divisible by attention_heads")
@@ -67,6 +114,17 @@ class SelfAttention(nn.Module):
         self.dropout = float(dropout)
 
     def forward(self, hidden: torch.Tensor, active_mask: torch.Tensor) -> torch.Tensor:
+        """Attend over the active positions.
+
+        Args:
+            hidden (torch.Tensor): Inputs of shape ``(batch, length, model_dim)``.
+            active_mask (torch.Tensor): Mask of shape ``(batch, length)``;
+                inactive positions are excluded as keys.
+
+        Returns:
+            torch.Tensor: Outputs of shape ``(batch, length, model_dim)``, zero
+                at inactive positions.
+        """
         batch, length, model_dim = hidden.shape
         qkv = self.qkv(hidden).view(
             batch, length, 3, self.num_heads, self.head_dim
@@ -90,6 +148,16 @@ class SelfAttention(nn.Module):
 def _modulate(
     hidden: torch.Tensor, shift: torch.Tensor, scale: torch.Tensor
 ) -> torch.Tensor:
+    """Apply the AdaLN modulation ``hidden * (1 + scale) + shift`` per row.
+
+    Args:
+        hidden (torch.Tensor): Inputs of shape ``(batch, length, model_dim)``.
+        shift (torch.Tensor): Shift of shape ``(batch, model_dim)``.
+        scale (torch.Tensor): Scale of shape ``(batch, model_dim)``.
+
+    Returns:
+        torch.Tensor: Modulated inputs of shape ``(batch, length, model_dim)``.
+    """
     return hidden * (1.0 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
 
@@ -104,6 +172,14 @@ class AdaLNTransformerBlock(nn.Module):
         mlp_ratio: int,
         dropout: float,
     ) -> None:
+        """Build the block; the final AdaLN projection is zero-initialised.
+
+        Args:
+            model_dim (int): Model width.
+            num_heads (int): Number of attention heads.
+            mlp_ratio (int): Hidden width of the MLP in units of ``model_dim``.
+            dropout (float): Dropout probability in attention and MLP.
+        """
         super().__init__()
         self.norm_attention = nn.LayerNorm(model_dim, elementwise_affine=False)
         self.attention = SelfAttention(model_dim, num_heads, dropout)
@@ -124,6 +200,20 @@ class AdaLNTransformerBlock(nn.Module):
         condition: torch.Tensor,
         active_mask: torch.Tensor,
     ) -> torch.Tensor:
+        """Apply gated, modulated self-attention and MLP residual updates.
+
+        Args:
+            hidden (torch.Tensor): Inputs of shape ``(batch, length, model_dim)``.
+            condition (torch.Tensor): Global condition of shape
+                ``(batch, model_dim)``. :class:`FluxVacuumTransformer` passes
+                the geometry embedding plus the time embedding, or the geometry
+                embedding alone when time conditioning is ``none``.
+            active_mask (torch.Tensor): Mask of shape ``(batch, length)``.
+
+        Returns:
+            torch.Tensor: Outputs of shape ``(batch, length, model_dim)``, zero
+                at inactive positions.
+        """
         modulation = self.adaln(condition)
         shift_a, scale_a, gate_a, shift_m, scale_m, gate_m = modulation.chunk(
             6, dim=-1
@@ -148,6 +238,14 @@ class QueryCrossAttentionBlock(nn.Module):
         mlp_ratio: int,
         dropout: float,
     ) -> None:
+        """Build the block.
+
+        Args:
+            model_dim (int): Model width.
+            num_heads (int): Number of attention heads.
+            mlp_ratio (int): Hidden width of the MLP in units of ``model_dim``.
+            dropout (float): Dropout probability in attention and MLP.
+        """
         super().__init__()
         self.query_norm = nn.LayerNorm(model_dim)
         self.memory_norm = nn.LayerNorm(model_dim)
@@ -172,6 +270,22 @@ class QueryCrossAttentionBlock(nn.Module):
         memory_mask: torch.Tensor,
         query_mask: torch.Tensor,
     ) -> torch.Tensor:
+        """Update the queries by pre-norm cross-attention to memory and an MLP.
+
+        Args:
+            queries (torch.Tensor): Queries of shape
+                ``(batch, num_queries, model_dim)``.
+            memory (torch.Tensor): Keys and values of shape
+                ``(batch, length, model_dim)``.
+            memory_mask (torch.Tensor): Mask of shape ``(batch, length)``;
+                ``False`` entries are excluded as keys.
+            query_mask (torch.Tensor): Mask of shape ``(batch, num_queries)``.
+
+        Returns:
+            torch.Tensor: Updated queries of shape
+                ``(batch, num_queries, model_dim)``, zero where ``query_mask`` is
+                ``False``.
+        """
         update, _ = self.cross_attention(
             self.query_norm(queries),
             self.memory_norm(memory),

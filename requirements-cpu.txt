@@ -1,0 +1,20 @@
+# CPU install (Linux and macOS): evaluation, and sampling without a GPU. Python >= 3.12.
+#   pip install -r requirements-cpu.txt
+# JAX on CPU: set XLA_FLAGS=--xla_backend_optimization_level=2 before importing JAX (README, "Installation").
+cytools==1.4.12
+flax==0.12.7
+# gurobipy: a dependency of jaxvacua (its default moduli sampling); a commercial solver with a size-limited pip licence.
+gurobipy==13.0.2
+jax==0.12.0.1
+# jaxvacua and jaxpolylog: the versions used for the paper.
+jaxpolylog==0.3.0
+jaxvacua @ git+https://github.com/StringJAX/jaxvacua.git@b8b5a52911b5886d0a2091966c03b8a98f082663
+numpy==2.5.4
+optax==0.2.8
+orbax-checkpoint==0.12.10
+pandas==3.0.6
+scipy==1.18.1
+seaborn==0.13.2
+stringjax_tools==0.1.0
+torch==2.12.0
+tqdm==4.68.2

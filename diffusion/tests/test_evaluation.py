@@ -9,6 +9,7 @@ import pickle
 import sys
 import tempfile
 import types
+from typing import Any
 import unittest
 from unittest.mock import patch
 
@@ -17,7 +18,16 @@ import numpy as np
 from diffusion import evaluate as evaluation
 
 
-def panel(mode):
+def panel(mode: str) -> list[list[np.ndarray]]:
+    """Return a well-formed 20-geometry sample panel of two rows per geometry.
+
+    Args:
+        mode (str): Evaluation mode; ``gs_inv`` gives one tau column, others two.
+
+    Returns:
+        list[list[np.ndarray]]: ``[flux, moduli, tau]`` per geometry, filled
+            with 0, 12 and 23 respectively.
+    """
     return [
         [np.zeros((2, 4 * (h12 + 1)), dtype=np.int64),
          np.full((2, 2 * h12), 12, dtype=np.int64),
@@ -27,7 +37,10 @@ def panel(mode):
 
 
 class EvaluationTests(unittest.TestCase):
-    def test_metadata_scale_and_geometry_validation(self):
+    """Check sample loading and the evaluation orchestration."""
+
+    def test_metadata_scale_and_geometry_validation(self) -> None:
+        """Check sidecar mode, scale, geometry-order and shape validation."""
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "samples.p"
             path.write_bytes(pickle.dumps(panel("nflux")))
@@ -52,7 +65,8 @@ class EvaluationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "shape"):
                 evaluation.load_samples(path, "nflux")
 
-    def test_all_modes_use_shared_converter_and_save_separate_results(self):
+    def test_all_modes_use_shared_converter_and_save_separate_results(self) -> None:
+        """Check every mode with the shared converter and mocked physics."""
         # Use the actual transformer converter; mock only heavyweight imports
         # and physics solving so this can run without Flax or jaxvacua.
         utils_path = evaluation.REPO_ROOT / "transformer/evaluation_scripts/evaluation_utils.py"
@@ -63,7 +77,11 @@ class EvaluationTests(unittest.TestCase):
         exec(compile(ast.Module(body=[converter], type_ignores=[]), str(utils_path), "exec"), utils.__dict__)
         calls = []
 
-        def validate(flux, z, tau, indices, model, out, tol, use_scipy, *flags):
+        def validate(
+            flux: np.ndarray, z: np.ndarray, tau: np.ndarray, indices: np.ndarray, model: Any,
+            out: dict[str, Any], tol: float, use_scipy: bool, *flags: bool,
+        ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, dict[str, Any]]:
+            """Record the call and keep the first row as the only valid vacuum."""
             calls.append((model.h12, tau.copy(), tol, use_scipy, flags))
             np.testing.assert_allclose(z, 1.2 + 1.2j)
             out.update(valid=2, valid_unique=1)
@@ -78,14 +96,19 @@ class EvaluationTests(unittest.TestCase):
         jax.clear_caches = lambda: None
 
         class Finder:
-            def __init__(self, h12, model_ID, maximum_degree):
+            """Stand-in for jaxvacua.FluxVacuaFinder with constant observables."""
+
+            def __init__(self, h12: int, model_ID: Any, maximum_degree: int) -> None:
+                """Store the geometry settings."""
                 self.h12 = h12
                 self.maximum_degree = maximum_degree
 
-            def tadpole(self, flux):
+            def tadpole(self, flux: np.ndarray) -> np.ndarray:
+                """Return a tadpole of 40 for every row."""
                 return np.full(len(flux), 40)
 
-            def superpotential_gauge_invariant(self, z, tau, flux):
+            def superpotential_gauge_invariant(self, z: np.ndarray, tau: np.ndarray, flux: np.ndarray) -> np.ndarray:
+                """Return a superpotential of 1.1 for every row."""
                 return np.full(len(flux), 1.1)
 
         jvc = types.ModuleType("jaxvacua")
