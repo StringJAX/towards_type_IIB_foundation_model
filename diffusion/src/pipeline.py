@@ -36,10 +36,10 @@ HODGE_PAIRS: tuple[tuple[int, int], ...] = (
 )
 # Targets match the hard-coded prompts in transformer/evaluate.py.
 MODES: dict[str, tuple[str, str | None, float | None]] = {
-    "unconditional": ("uncon_grpo_best.pt", None, None),
-    "nflux": ("nflux_grpo_best.pt", "N_flux", 40.0),
-    "w0": ("w0_abs_grpo_best.pt", "W0_abs", 1.1),
-    "gs_inv": ("gs_grpo_best.pt", "g_s", 0.25),
+    "unconditional": ("uncon_grpo.pt", None, None),
+    "nflux": ("nflux_grpo.pt", "N_flux", 40.0),
+    "w0": ("w0_grpo.pt", "W0_abs", 1.1),
+    "gs_inv": ("gs_grpo.pt", "g_s", 0.25),
 }
 SAMPLERS: dict[str, type[StructuredFluxSampler]] = {
     "random": StructuredFluxSampler,

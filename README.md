@@ -152,9 +152,7 @@ pre-trained (or fine-tuned) and then GRPO-refined; diffusion checkpoints are in 
 The transformer notebooks load these runs (`RUN_ID`, `load_ckpt`). The scaling study and the timing comparison are not
 part of this repository.
 
-**Note on the diffusion checkpoints.** `uncon_grpo.pt` and `h12_5_finetuned_grpo.pt` are currently identical files,
-and `diffusion/src/pipeline.py` still loads the GRPO checkpoints under their earlier names (`*_grpo_best.pt`). Both
-will be corrected; until then the diffusion sample notebook cannot load its default checkpoints.
+
 <!-- docs:reproduce-end -->
 
 ---
