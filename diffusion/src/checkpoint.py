@@ -90,7 +90,8 @@ def load_flux_transformer_model(
 
     Raises:
         ValueError: If ``kind`` is not :data:`CHECKPOINT_KIND`, the format
-            version is not :data:`CHECKPOINT_FORMAT_VERSION`, or the moduli
+            version is not :data:`CHECKPOINT_FORMAT_VERSION`, the checkpoint
+            needs the unavailable shared-coordinate architecture, or the moduli
             statistics fail :func:`validate_moduli_statistics`.
     """
     payload = torch.load(path, map_location="cpu", weights_only=False)
@@ -98,6 +99,12 @@ def load_flux_transformer_model(
         raise ValueError(f"Not a FluxVacuumTransformer checkpoint: {path}")
     if int(payload.get("format_version", -1)) != CHECKPOINT_FORMAT_VERSION:
         raise ValueError(f"Unsupported FluxVacuumTransformer checkpoint format: {path}")
+    if payload.get("model_architecture") == "family_shared_sinusoidal_v1":
+        raise ValueError(
+            f"{path} requires the family_shared_sinusoidal_v1 model implementation. "
+            "This architecture is not included in diffusion/src; its original "
+            "shared-coordinate model code is needed to load these weights faithfully."
+        )
     validate_moduli_statistics(payload["moduli_statistics"])
     model = FluxVacuumTransformer(
         FluxVacuumTransformerConfig(**payload["model_config"]),

@@ -5,3 +5,5 @@ __pycache__/
 documentation/build/
 documentation/source/_autosummary/
 documentation/jupyter_execute/
+
+diffusion/tests/
