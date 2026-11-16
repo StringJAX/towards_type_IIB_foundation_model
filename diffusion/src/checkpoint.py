@@ -8,15 +8,12 @@ from typing import Any, Mapping
 import torch
 
 from .data.moduli import validate_moduli_statistics
-from .masking import canonical_mask_schedule, canonical_time_conditioning
+from .masking import canonical_mask_schedule
 from .model.flux_transformer import FluxVacuumTransformer, FluxVacuumTransformerConfig
 
 
 def checkpoint_mask_schedule(payload: Mapping[str, Any]) -> str:
     """Read the schedule recorded by supervised or policy training.
-
-    Checkpoints created before this option existed used the sine schedule, so
-    an absent value intentionally resolves to ``sine``.
 
     Args:
         payload (Mapping[str, Any]): Loaded checkpoint. The schedule is read
@@ -27,7 +24,7 @@ def checkpoint_mask_schedule(payload: Mapping[str, Any]) -> str:
         str: Canonical schedule name, ``"sine"`` or ``"linear"``.
 
     Raises:
-        ValueError: If the recorded schedule is not a supported name.
+        ValueError: If the schedule is missing or is not a supported name.
     """
 
     run_config = payload.get("run_config", {})
@@ -38,30 +35,11 @@ def checkpoint_mask_schedule(payload: Mapping[str, Any]) -> str:
         sampling = run_config.get("sampling", {})
         if isinstance(sampling, Mapping) and "mask_schedule" in sampling:
             return canonical_mask_schedule(sampling["mask_schedule"])
-    return "sine"
-
-
-def checkpoint_time_conditioning(payload: Mapping[str, Any]) -> str:
-    """Read the architecture's discrete, continuous, or absent time input.
-
-    Args:
-        payload (Mapping[str, Any]): Loaded checkpoint; the mode is read from
-            ``model_config["time_conditioning"]``.
-
-    Returns:
-        str: ``"discrete"``, ``"continuous"`` or ``"none"``; ``"discrete"``
-            when ``model_config`` is absent, is not a mapping, or lacks the field.
-
-    Raises:
-        ValueError: If the recorded mode is not a supported name.
-    """
-
-    model_config = payload.get("model_config", {})
-    if isinstance(model_config, Mapping):
-        return canonical_time_conditioning(
-            model_config.get("time_conditioning", "discrete")
-        )
-    return "discrete"
+    raise ValueError(
+        "Missing checkpoint mask_schedule: expected "
+        "run_config['diffusion']['mask_schedule'] or "
+        "run_config['sampling']['mask_schedule']."
+    )
 
 
 def load_flux_transformer_model(

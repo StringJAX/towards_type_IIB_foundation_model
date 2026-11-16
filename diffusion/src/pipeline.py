@@ -17,7 +17,6 @@ from tqdm.auto import tqdm
 
 from .checkpoint import (
     checkpoint_mask_schedule,
-    checkpoint_time_conditioning,
     load_flux_transformer_model,
 )
 from .sampling import ConfidenceOrderFluxSampler, MaskGITFluxSampler, StructuredFluxSampler
@@ -180,7 +179,7 @@ def sample_for_evaluation(
     guidance_scale = float(defaults.get("guidance_scale", 1.0) if guidance_scale is None else guidance_scale)
     if not math.isfinite(temperature) or temperature <= 0:
         raise ValueError("temperature must be positive and finite")
-    time_conditioning = checkpoint_time_conditioning(payload)
+    time_conditioning = model.config.time_conditioning
     sampler_kwargs = {
         "num_timesteps": defaults.get("timesteps", config.get("diffusion", {}).get("timesteps", 200)) if time_conditioning == "discrete" else None,
         "mask_schedule": checkpoint_mask_schedule(payload),
